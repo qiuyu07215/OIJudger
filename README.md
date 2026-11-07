@@ -85,6 +85,8 @@ Add-MpPreference -ExclusionPath "D:\比赛目录\.oij"   # 编译缓存，程序
 
 ## 从源码构建
 
+参与开发请先读 [交接文档](docs/HANDOVER.md)：代码结构、测试、发布流程与关键设计。
+
 需要 Rust 与 Node.js。推荐 MSVC 工具链（Visual Studio Build Tools，含“使用 C++ 的桌面开发”）：发布版即用它构建，`.cargo/config.toml` 让 C 运行库静态链接，用户无需安装 VC++ 运行库。
 
 ```
