@@ -5,6 +5,7 @@ members = [
     "crates/judge-core",
     "crates/store",
     "crates/cli",
+    "app/src-tauri",
 ]
 
 [workspace.package]

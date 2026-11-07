@@ -142,9 +142,12 @@ impl Workspace {
         let masks = sandbox::performance_core_masks();
         let mut workers = Vec::with_capacity(count);
         for i in 0..count {
-            let container = sandbox::Container::open(&format!("OIJudger.W{i}"))
+            // Per-process names: a second running instance must not share
+            // container identities (and thus file access) with this one.
+            let pid = std::process::id();
+            let container = sandbox::Container::open(&run_profile(pid, i))
                 .with_context(|| format!("creating sandbox for worker {i}"))?;
-            let build_container = sandbox::Container::open_scratch(&format!("OIJudger.B{i}"))
+            let build_container = sandbox::Container::open_scratch(&build_profile(pid, i))
                 .with_context(|| format!("creating build sandbox for worker {i}"))?;
             let wroot = root.join(format!("w{i}"));
             for d in ["build", "run", "check"] {
@@ -161,9 +164,29 @@ impl Workspace {
     }
 }
 
+fn run_profile(pid: u32, i: usize) -> String {
+    format!("OIJudger.{pid}.W{i}")
+}
+
+fn build_profile(pid: u32, i: usize) -> String {
+    format!("OIJudger.{pid}.B{i}")
+}
+
+fn delete_profiles(pid: u32, count: usize) {
+    for i in 0..count {
+        sandbox::Container::delete_profile(&run_profile(pid, i));
+        sandbox::Container::delete_profile(&build_profile(pid, i));
+    }
+}
+
+/// Upper bound on workers when cleaning up after a crashed instance.
+const MAX_WORKERS: usize = 64;
+
 impl Drop for Workspace {
     fn drop(&mut self) {
+        let n = self.workers.len();
         self.workers.clear();
+        delete_profiles(std::process::id(), n);
         drop(self.lock.take());
         let _ = std::fs::remove_dir_all(&self.root);
     }
@@ -184,5 +207,8 @@ fn cleanup_stale(base: &Path) {
             continue;
         }
         let _ = std::fs::remove_dir_all(e.path());
+        if let Ok(pid) = e.file_name().to_string_lossy().parse::<u32>() {
+            delete_profiles(pid, MAX_WORKERS);
+        }
     }
 }

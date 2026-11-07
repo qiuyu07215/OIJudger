@@ -5,3 +5,4 @@ node_modules/
 *.exe
 !assets/**/*.exe
 /dist
+/app/src-tauri/gen

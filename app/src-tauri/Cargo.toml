@@ -1,0 +1,34 @@
+[package]
+name = "oijudger"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "OIJudger desktop application"
+
+[[bin]]
+name = "OIJudger"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+oij.workspace = true
+judge-core.workspace = true
+store.workspace = true
+sandbox.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+parking_lot.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_System_Console"] }
+
+[features]
+# Embed the built UI instead of loading it from the Vite dev server.
+custom-protocol = ["tauri/custom-protocol"]

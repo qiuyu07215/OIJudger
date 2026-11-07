@@ -1,0 +1,130 @@
+// Development only: fake backend so the UI can be previewed in a plain
+// browser (`npm run dev`). Never bundled into the desktop app.
+import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
+import { emit } from "@tauri-apps/api/event";
+import type { AppSettings, CellView, Contest, ProblemResult, ProgressView, Subtask } from "./api";
+
+function sub(prefix: string, n: number, score: number, deps = false): Subtask[] {
+  return Array.from({ length: n }, (_, i) => ({
+    score,
+    time_ms: 1000,
+    memory_mb: 512,
+    cases: [{ input: `${prefix}/${prefix}${i + 1}.in`, output: `${prefix}/${prefix}${i + 1}.out` }],
+    depends: deps && i > 0 ? [i] : undefined,
+  }));
+}
+
+const contest: Contest = {
+  title: "NOIP 2026 模拟赛（第三场）",
+  problem: [
+    { name: "sum", title: "A + B", kind: "traditional", subfolder: "auto", stdio: true, comparator: "lines", real_eps: 1e-6, subtask: sub("sum", 10, 10) },
+    { name: "path", title: "最短路", kind: "traditional", subfolder: "auto", stdio: false, comparator: "lines", real_eps: 1e-6, subtask: sub("path", 20, 5, true) },
+    { name: "geo", title: "几何", kind: "traditional", subfolder: "auto", stdio: true, comparator: "real", real_eps: 1e-6, checker: { path: "geo/checker.cpp", kind: "testlib" }, subtask: sub("geo", 4, 25) },
+    { name: "guess", title: "猜数", kind: "interactive", subfolder: "auto", stdio: true, comparator: "lines", real_eps: 1e-6, interactor: "guess/interactor.cpp", subtask: sub("guess", 5, 20) },
+  ],
+};
+
+let seed = 7;
+const rnd = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+const names = Array.from({ length: 120 }, (_, i) => `student${String(i + 1).padStart(3, "0")}`);
+const labels = ["WA", "TLE", "RE", "MLE"];
+
+function makeCell(c: string, p: (typeof contest.problem)[number]): CellView {
+  const full = p.subtask.reduce((s, t) => s + t.score, 0);
+  const r = rnd();
+  if (r < 0.06) return { contestant: c, problem: p.name, score: 0, full, label: "Missing", status: "NoSource", time_ms: 0, stale: false };
+  if (r < 0.1) return { contestant: c, problem: p.name, score: 0, full, label: "CE", status: "CompileError", time_ms: 0, stale: false };
+  const score = r > 0.55 ? full : Math.round(full * rnd() * 10) / 10 > full * 0.1 ? Math.round(full * rnd()) : 0;
+  return {
+    contestant: c, problem: p.name, score, full, label: score >= full ? "AC" : labels[Math.floor(rnd() * labels.length)],
+    status: "Judged", time_ms: Math.round(rnd() * 3000), stale: rnd() < 0.03,
+  };
+}
+
+const cells: CellView[] = [];
+for (const c of names) for (const p of contest.problem) if (rnd() > 0.02) cells.push(makeCell(c, p));
+
+const settings: AppSettings = {
+  compilers: [
+    { lang: "cpp", path: "C:\\mingw64\\bin\\g++.exe", args: "-O2 -std=c++17 -static -DONLINE_JUDGE" },
+    { lang: "c", path: "C:\\mingw64\\bin\\gcc.exe", args: "-O2 -std=c11 -static -DONLINE_JUDGE -lm" },
+  ],
+  workers: 0, pin_cores: true, patch_stack: true, output_limit_mb: 256, compile_time_ms: 20000, compile_memory_mb: 2048,
+  checker_time_ms: 10000, checker_memory_mb: 2048, language: "zh-CN", recent: ["D:\\contests\\noip-mock-3", "D:\\contests\\csp-s-2026"],
+};
+
+function result(c: string, pname: string): ProblemResult | null {
+  const cell = cells.find((x) => x.contestant === c && x.problem === pname);
+  const p = contest.problem.find((x) => x.name === pname)!;
+  if (!cell) return null;
+  if (cell.status === "CompileError")
+    return { contestant: c, problem: pname, status: "CompileError", score: 0, full: cell.full, time_ms: 0, judged_at: Date.now() / 1000, subtasks: [],
+      message: `${pname}.cpp: In function 'int main()':\n${pname}.cpp:7:5: error: 'vectr' was not declared in this scope\n    7 |     vectr<int> a(n);\n      |     ^~~~~` };
+  let ok = Math.round((cell.score / cell.full) * p.subtask.length);
+  return {
+    contestant: c, problem: pname, status: cell.status, score: cell.score, full: cell.full, time_ms: cell.time_ms, judged_at: Date.now() / 1000,
+    subtasks: p.subtask.map((s) => {
+      const pass = ok-- > 0;
+      return { score: pass ? s.score : 0, full: s.score, cases: s.cases.map((cs) => ({
+        input: cs.input, verdict: pass ? "AC" : (cell.label as never), ratio: pass ? 1 : 0, time_ms: Math.round(rnd() * 900), memory_kb: 1200 + Math.round(rnd() * 50000),
+        message: pass ? "" : cell.label === "WA" ? "Line 3: expected `42`, found `41`" : cell.label === "RE" ? "Access violation (invalid memory access) (0xC0000005)" : "",
+      })) };
+    }),
+  };
+}
+
+let open = false;
+async function simulate(total: number) {
+  const view: ProgressView = { running: true, total, done: 0, workers: [null, null, null, null], counts: {}, elapsed_ms: 0, updates: [], messages: [], error: null };
+  const start = Date.now();
+  for (let i = 0; i < total; i++) {
+    await new Promise((r) => setTimeout(r, 60));
+    const c = names[Math.floor(i / contest.problem.length) % names.length];
+    const p = contest.problem[i % contest.problem.length];
+    const cell = makeCell(c, p);
+    const idx = cells.findIndex((x) => x.contestant === c && x.problem === p.name);
+    if (idx >= 0) cells[idx] = cell; else cells.push(cell);
+    view.done++;
+    view.counts[cell.label] = (view.counts[cell.label] ?? 0) + 1;
+    view.workers = view.workers.map((_, k) => ({ contestant: names[(i + k) % names.length], problem: contest.problem[(i + k) % 4].name, cases_done: k * 3 }));
+    view.elapsed_ms = Date.now() - start;
+    view.updates = [cell];
+    await emit("judge-progress", { ...view });
+  }
+  await emit("judge-progress", { ...view, running: false, workers: [], updates: [] });
+}
+
+export function installMocks() {
+  mockWindows("main");
+  mockIPC(
+    async (cmd, args) => {
+      const a = (args ?? {}) as Record<string, unknown>;
+      switch (cmd) {
+        case "app_info": return { version: "0.1.0-dev", settings_path: "C:\\Users\\you\\AppData\\Roaming\\OIJudger\\settings.toml", cpu_cores: 6, default_workers: 4 };
+        case "get_settings": return settings;
+        case "save_settings": Object.assign(settings, a.settings); return null;
+        case "detect_compilers": return settings.compilers.map((c) => ({ ...c, version: "g++.exe (MinGW-Builds) 16.1.0" }));
+        case "open_contest": case "reload_contest": open = true; return { root: "D:\\contests\\noip-mock-3", contest, contestants: names, cells };
+        case "save_contest_config": Object.assign(contest, a.contest); return { root: "D:\\contests\\noip-mock-3", contest, contestants: names, cells };
+        case "close_contest": open = false; return null;
+        case "get_result": return result(a.contestant as string, a.problem as string);
+        case "read_source": return [{ path: `D:\\contests\\noip-mock-3\\source\\${a.contestant}\\${a.problem}\\${a.problem}.cpp`, text: "#include <bits/stdc++.h>\nusing namespace std;\n\nint main() {\n    long long a, b;\n    cin >> a >> b;\n    cout << a + b << endl;\n}\n" }];
+        case "list_data_files": return Array.from({ length: 10 }, (_, i) => [`${a.sub}${i + 1}.in`, `${a.sub}${i + 1}.out`]).flat();
+        case "detect_problems": return [];
+        case "judge_status": return null;
+        case "start_judge": simulate(40); return null;
+        case "cancel_judge": return null;
+        case "run_selftest":
+          await new Promise((r) => setTimeout(r, 800));
+          return ["normal program runs", "network is blocked (loopback, internet, DNS)", "files outside the sandbox cannot be read", "busy loop is stopped (TLE)"]
+            .map((name) => ({ name, passed: true, detail: "BLOCKED" }));
+        default:
+          if (cmd.startsWith("plugin:")) return null;
+          console.warn("unmocked command", cmd, a);
+          return null;
+      }
+    },
+    { shouldMockEvents: true },
+  );
+  void open;
+}
