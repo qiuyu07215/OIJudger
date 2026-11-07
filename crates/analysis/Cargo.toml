@@ -1,0 +1,10 @@
+[package]
+name = "analysis"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Score statistics and source similarity detection for OIJudger"
+
+[dependencies]
+judge-core.workspace = true
+serde.workspace = true

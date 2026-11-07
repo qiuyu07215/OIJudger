@@ -16,6 +16,8 @@ path = "src/main.rs"
 [dependencies]
 judge-core.workspace = true
 store.workspace = true
+analysis.workspace = true
+export.workspace = true
 sandbox.workspace = true
 anyhow.workspace = true
 clap.workspace = true

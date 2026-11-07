@@ -48,6 +48,9 @@ fn main() {
             commands::cancel_judge,
             commands::judge_status,
             commands::run_selftest,
+            commands::get_stats,
+            commands::export_results,
+            commands::similarity,
         ])
         .run(tauri::generate_context!())
         .expect("error while running OIJudger");

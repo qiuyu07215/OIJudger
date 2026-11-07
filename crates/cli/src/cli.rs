@@ -9,7 +9,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use judge_core::{AppSettings, Event};
 
-use crate::project::{absolute, fmt_score, Project, Selection};
+use crate::project::{absolute, fmt_score, ExportFormat, Project, Selection};
 
 #[derive(Parser, Debug)]
 #[command(name = "oijudger", version, about = "OIJudger — sandboxed local judge for OI contests")]
@@ -62,6 +62,30 @@ pub enum Command {
         #[arg(long)]
         contestant: Option<String>,
     },
+    /// Export results (csv, xlsx, html, htm = html without details)
+    Export {
+        dir: PathBuf,
+        #[arg(short, long, default_value = "html")]
+        format: String,
+        /// Output file (default: <DIR>/results.<ext>)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Language of the export: zh-CN or en (default: from settings)
+        #[arg(long)]
+        lang: Option<String>,
+    },
+    /// Print score statistics
+    Stats { dir: PathBuf },
+    /// Find suspiciously similar submissions
+    Similarity {
+        dir: PathBuf,
+        /// Only this problem (default: all)
+        #[arg(short, long)]
+        problem: Option<String>,
+        /// Minimum similarity in percent
+        #[arg(short, long, default_value_t = 60.0)]
+        threshold: f64,
+    },
     /// List detected compilers
     Compilers,
     /// Verify sandbox isolation and limits on this machine
@@ -113,6 +137,66 @@ pub fn run(cli: Cli) -> Result<i32> {
             match contestant {
                 None => print_ranking(&project)?,
                 Some(c) => print_details(&project, &c)?,
+            }
+            Ok(0)
+        }
+        Command::Export { dir, format, output, lang } => {
+            let fmt = ExportFormat::parse(&format).ok_or_else(|| anyhow::anyhow!("unknown format {format}"))?;
+            let project = Project::open(&dir)?;
+            let out = output.unwrap_or_else(|| project.root().join(format!("results.{}", fmt.extension())));
+            project.export(fmt, &out, lang.as_deref().unwrap_or(&settings.language))?;
+            println!("Wrote {}", out.display());
+            Ok(0)
+        }
+        Command::Stats { dir } => {
+            let project = Project::open(&dir)?;
+            let st = project.stats()?;
+            println!(
+                "{:<16} {:>6} {:>7} {:>8} {:>7} {:>7} {:>6} {:>6} {:>7}",
+                "", "full", "subm.", "mean", "median", "std", "full#", "zero#", "discr."
+            );
+            let row = |name: &str, s: &analysis::stats::Summary| {
+                println!(
+                    "{:<16} {:>6} {:>7} {:>8.2} {:>7} {:>7.2} {:>6} {:>6} {:>7.3}",
+                    truncate(name, 16),
+                    fmt_score(s.full),
+                    s.submitted,
+                    s.mean,
+                    fmt_score(s.median),
+                    s.std_dev,
+                    s.full_count,
+                    s.zero_count,
+                    s.discrimination
+                )
+            };
+            row("(total)", &st.overall);
+            for p in &st.problems {
+                row(&p.name, &p.summary);
+            }
+            Ok(0)
+        }
+        Command::Similarity { dir, problem, threshold } => {
+            let project = Project::open(&dir)?;
+            let names: Vec<String> = match problem {
+                Some(p) => vec![p],
+                None => project.contest.problems.iter().map(|p| p.name.clone()).collect(),
+            };
+            let mut any = false;
+            for p in names {
+                for pair in project.similarity(&p, threshold / 100.0) {
+                    any = true;
+                    println!(
+                        "{:<12} {:>5.1}%  {} <-> {}  ({} shared fingerprints)",
+                        p,
+                        pair.similarity * 100.0,
+                        pair.a,
+                        pair.b,
+                        pair.shared
+                    );
+                }
+            }
+            if !any {
+                println!("No pairs above {threshold}%.");
             }
             Ok(0)
         }

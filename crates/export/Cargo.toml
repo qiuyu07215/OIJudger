@@ -1,0 +1,15 @@
+[package]
+name = "export"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Result export (HTML, CSV, XLSX) for OIJudger"
+
+[dependencies]
+judge-core.workspace = true
+analysis.workspace = true
+anyhow.workspace = true
+rust_xlsxwriter.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

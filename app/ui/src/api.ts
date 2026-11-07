@@ -160,6 +160,27 @@ export interface JudgeRequest {
   pairs?: [string, string][];
 }
 
+export interface Summary {
+  count: number; submitted: number; full: number; mean: number; std_dev: number; min: number;
+  q1: number; median: number; q3: number; max: number; full_count: number; zero_count: number; discrimination: number;
+}
+export interface Bucket { lo: number; hi: number; count: number; ratio: number; prefix: number; suffix: number }
+export interface ScoreCount { score: number; count: number; ratio: number; prefix: number; suffix: number }
+export interface SubtaskStat { full: number; mean: number; pass_rate: number; case_pass_rates: number[] }
+export interface ProblemStat {
+  name: string; title: string; summary: Summary; counts: ScoreCount[]; histogram: Bucket[];
+  labels: Record<string, number>; verdicts: Record<string, number>; subtasks: SubtaskStat[]; mean_time_ms: number;
+}
+export interface GroupStat { key: string; value: string; summary: Summary; problem_means: number[] }
+export interface ContestStats {
+  contestants: number; overall: Summary; counts: ScoreCount[]; histogram: Bucket[]; problems: ProblemStat[];
+  correlation: number[][]; totals: number[]; problem_scores: number[][]; groups: GroupStat[]; group_keys: string[];
+}
+export interface SimPair {
+  a: string; b: string; similarity: number; jaccard: number; shared: number;
+  a_lines: [number, number][]; b_lines: [number, number][];
+}
+
 export const api = {
   appInfo: () => invoke<AppInfo>("app_info"),
   getSettings: () => invoke<AppSettings>("get_settings"),
@@ -180,6 +201,9 @@ export const api = {
   cancelJudge: () => invoke<void>("cancel_judge"),
   judgeStatus: () => invoke<ProgressView | null>("judge_status"),
   runSelftest: () => invoke<ProbeView[]>("run_selftest"),
+  getStats: () => invoke<ContestStats>("get_stats"),
+  exportResults: (format: string, path: string) => invoke<void>("export_results", { format, path }),
+  similarity: (problem: string, threshold: number) => invoke<SimPair[]>("similarity", { problem, threshold }),
   onProgress: (f: (p: ProgressView) => void): Promise<UnlistenFn> =>
     listen<ProgressView>("judge-progress", (e) => f(e.payload)),
 };

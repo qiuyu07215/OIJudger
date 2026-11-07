@@ -215,3 +215,90 @@ pub fn absolute(p: &Path) -> PathBuf {
         })
         .unwrap_or_else(|_| p.to_path_buf())
 }
+
+/// Optional contestant metadata for group statistics.
+pub const GROUPS_FILE: &str = "contestants.csv";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportFormat {
+    Csv,
+    Xlsx,
+    Html,
+    /// HTML without per-case details (much smaller).
+    HtmlBrief,
+}
+
+impl ExportFormat {
+    pub fn parse(s: &str) -> Option<ExportFormat> {
+        match s.to_ascii_lowercase().as_str() {
+            "csv" => Some(ExportFormat::Csv),
+            "xlsx" | "excel" => Some(ExportFormat::Xlsx),
+            "html" => Some(ExportFormat::Html),
+            "htm" | "html-brief" => Some(ExportFormat::HtmlBrief),
+            _ => None,
+        }
+    }
+    pub fn extension(self) -> &'static str {
+        match self {
+            ExportFormat::Csv => "csv",
+            ExportFormat::Xlsx => "xlsx",
+            ExportFormat::Html => "html",
+            ExportFormat::HtmlBrief => "htm",
+        }
+    }
+}
+
+impl Project {
+    pub fn groups(&self) -> (Vec<String>, analysis::Groups) {
+        std::fs::read_to_string(self.root().join(GROUPS_FILE)).map(|t| analysis::parse_groups(&t)).unwrap_or_default()
+    }
+
+    pub fn stats(&self) -> Result<analysis::ContestStats> {
+        let results = self.store.lock().load_all()?;
+        let (_, groups) = self.groups();
+        Ok(analysis::compute(&self.contest, &self.contestants, &results, &groups))
+    }
+
+    pub fn export(&self, format: ExportFormat, path: &Path, lang: &str) -> Result<()> {
+        let results = self.store.lock().load_all()?;
+        let (_, groups) = self.groups();
+        let stats = analysis::compute(&self.contest, &self.contestants, &results, &groups);
+        let d = export::ExportData {
+            contest: &self.contest,
+            contestants: &self.contestants,
+            results: &results,
+            stats: &stats,
+            lang: export::Lang::from_code(lang),
+        };
+        match format {
+            ExportFormat::Csv => std::fs::write(path, export::to_csv(&d))?,
+            ExportFormat::Xlsx => export::to_xlsx(&d, path)?,
+            ExportFormat::Html => std::fs::write(path, export::to_html(&d, true))?,
+            ExportFormat::HtmlBrief => std::fs::write(path, export::to_html(&d, false))?,
+        }
+        Ok(())
+    }
+
+    /// Source text of every contestant for a problem (first source file).
+    pub fn sources(&self, problem: &str) -> Vec<(String, String)> {
+        let Some(p) = self.contest.problem(problem) else { return Vec::new() };
+        let name = match (&p.kind, &p.communication) {
+            (judge_core::ProblemKind::Communication, Some(c)) if !c.sources.is_empty() => c.sources[0].clone(),
+            _ => p.source_name().to_string(),
+        };
+        self.contestants
+            .iter()
+            .filter_map(|c| {
+                let path = judge_core::discover::find_source(&self.dir, c, p, &name)?;
+                let data = std::fs::read(&path).ok()?;
+                Some((c.clone(), String::from_utf8_lossy(&data).into_owned()))
+            })
+            .collect()
+    }
+
+    pub fn similarity(&self, problem: &str, threshold: f64) -> Vec<analysis::similarity::Pair> {
+        let subs = self.sources(problem);
+        let opt = analysis::similarity::Options { threshold, ..Default::default() };
+        analysis::similarity::compare_all(&subs, &opt)
+    }
+}

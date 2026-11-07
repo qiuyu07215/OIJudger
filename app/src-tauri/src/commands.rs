@@ -433,3 +433,31 @@ pub async fn list_data_files(sub: String, state: State<'_, AppState>) -> CmdResu
     })
     .await
 }
+
+#[tauri::command]
+pub async fn get_stats(state: State<'_, AppState>) -> CmdResult<analysis::ContestStats> {
+    let project = state.project()?;
+    blocking(move || project.stats().map_err(err)).await
+}
+
+/// `format`: csv | xlsx | html | htm.
+#[tauri::command]
+pub async fn export_results(format: String, path: String, state: State<'_, AppState>) -> CmdResult<()> {
+    let project = state.project()?;
+    let fmt = oij::project::ExportFormat::parse(&format).ok_or_else(|| format!("unknown format {format}"))?;
+    blocking(move || {
+        let lang = AppSettings::load().language;
+        project.export(fmt, std::path::Path::new(&path), &lang).map_err(err)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn similarity(
+    problem: String,
+    threshold: f64,
+    state: State<'_, AppState>,
+) -> CmdResult<Vec<analysis::similarity::Pair>> {
+    let project = state.project()?;
+    blocking(move || Ok(project.similarity(&problem, threshold))).await
+}

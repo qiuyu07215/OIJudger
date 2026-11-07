@@ -94,6 +94,43 @@ async function simulate(total: number) {
   await emit("judge-progress", { ...view, running: false, workers: [], updates: [] });
 }
 
+function summary(xs: number[], full: number) {
+  const s = [...xs].sort((a, b) => a - b);
+  const q = (p: number) => s[Math.round(p * (s.length - 1))] ?? 0;
+  const mean = xs.reduce((a, b) => a + b, 0) / Math.max(1, xs.length);
+  const std = Math.sqrt(xs.reduce((a, b) => a + (b - mean) ** 2, 0) / Math.max(1, xs.length));
+  return {
+    count: xs.length, submitted: xs.length - 3, full, mean, std_dev: std, min: s[0] ?? 0, q1: q(0.25), median: q(0.5), q3: q(0.75),
+    max: s[s.length - 1] ?? 0, full_count: xs.filter((x) => x >= full).length, zero_count: xs.filter((x) => x === 0).length,
+    discrimination: 0.42 + rnd() * 0.3,
+  };
+}
+
+function mockStats() {
+  const score = (c: string, p: string) => cells.find((x) => x.contestant === c && x.problem === p)?.score ?? 0;
+  const per = contest.problem.map((p) => names.map((c) => score(c, p.name)));
+  const totals = names.map((_, i) => per.reduce((s, row) => s + row[i], 0));
+  const full = 400;
+  const hist = Array.from({ length: 20 }, (_, i) => {
+    const lo = i * 20, hi = lo + 20;
+    const count = totals.filter((x) => x >= lo && (x < hi || (i === 19 && x <= hi))).length;
+    return { lo, hi, count, ratio: count / names.length, prefix: 0, suffix: totals.filter((x) => x >= lo).length };
+  });
+  return {
+    contestants: names.length, overall: summary(totals, full), counts: [], histogram: hist,
+    problems: contest.problem.map((p, i) => ({
+      name: p.name, title: p.title, summary: summary(per[i], 100), counts: [], histogram: [],
+      labels: { AC: 60 + i * 3, WA: 20, TLE: 12 - i, RE: 6, CE: 4, Missing: 7 }, verdicts: {},
+      subtasks: p.subtask.map((_, k) => ({ full: 10, mean: 5, pass_rate: Math.max(0, 0.95 - k * 0.04 - i * 0.08 - rnd() * 0.1), case_pass_rates: [] })),
+      mean_time_ms: 120 + i * 80,
+    })),
+    correlation: contest.problem.map((_, i) => contest.problem.map((_, j) => (i === j ? 1 : Math.round((0.6 - Math.abs(i - j) * 0.25) * 100) / 100))),
+    totals, problem_scores: per,
+    groups: ["一中", "二中", "实验中学", "外国语"].map((v, k) => ({ key: "学校", value: v, summary: summary(totals.filter((_, i) => i % 4 === k), full), problem_means: [80 - k * 5, 70 - k * 4, 60 - k * 6, 55 - k * 3] })),
+    group_keys: ["学校"],
+  };
+}
+
 export function installMocks() {
   mockWindows("main");
   mockIPC(
@@ -114,6 +151,14 @@ export function installMocks() {
         case "judge_status": return null;
         case "start_judge": simulate(40); return null;
         case "cancel_judge": return null;
+        case "get_stats": return mockStats();
+        case "export_results": return null;
+        case "similarity":
+          return [
+            { a: "student014", b: "student077", similarity: 0.96, jaccard: 0.91, shared: 54, a_lines: [[4, 7]], b_lines: [[3, 7]] },
+            { a: "student031", b: "student090", similarity: 0.82, jaccard: 0.64, shared: 31, a_lines: [[5, 6]], b_lines: [[4, 7]] },
+            { a: "student002", b: "student118", similarity: 0.71, jaccard: 0.5, shared: 19, a_lines: [[6, 7]], b_lines: [[6, 7]] },
+          ].filter((p) => p.similarity >= (a.threshold as number));
         case "run_selftest":
           await new Promise((r) => setTimeout(r, 800));
           return ["normal program runs", "network is blocked (loopback, internet, DNS)", "files outside the sandbox cannot be read", "busy loop is stopped (TLE)"]

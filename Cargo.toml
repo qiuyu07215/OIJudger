@@ -4,6 +4,8 @@ members = [
     "crates/sandbox",
     "crates/judge-core",
     "crates/store",
+    "crates/analysis",
+    "crates/export",
     "crates/cli",
     "app/src-tauri",
 ]
