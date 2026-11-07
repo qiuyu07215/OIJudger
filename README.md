@@ -85,7 +85,7 @@ Add-MpPreference -ExclusionPath "D:\比赛目录\.oij"   # 编译缓存，程序
 
 ## 从源码构建
 
-需要 Rust（MSVC 或 GNU 工具链）与 Node.js。
+需要 Rust 与 Node.js。推荐 MSVC 工具链（Visual Studio Build Tools，含“使用 C++ 的桌面开发”）：发布版即用它构建，`.cargo/config.toml` 让 C 运行库静态链接，用户无需安装 VC++ 运行库。
 
 ```
 cd app/ui && npm install && npm run build
@@ -94,7 +94,7 @@ cargo build --release -p oij
 cargo test --workspace
 ```
 
-使用 GNU 工具链且项目路径含空格时，请设置不含空格的 `CARGO_TARGET_DIR`（MinGW 的 `windres` 不支持空格路径）。GNU 构建的 `OIJudger.exe` 需要同目录下的 `WebView2Loader.dll`（构建时会生成在 `release/` 中，`scripts/package.py` 会一并打包）；MSVC 构建则不需要。
+也可以用 GNU 工具链构建：项目路径含空格时，请设置不含空格的 `CARGO_TARGET_DIR`（MinGW 的 `windres` 不支持空格路径）。GNU 构建的 `OIJudger.exe` 需要同目录下的 `WebView2Loader.dll`（构建时会生成在 `release/` 中，`scripts/package.py` 会一并打包）；MSVC 构建则不需要。
 
 打包：`python scripts/package.py <CARGO_TARGET_DIR> [MinGW 目录]`，生成 `dist/` 下的普通版与便携版压缩包。
 
