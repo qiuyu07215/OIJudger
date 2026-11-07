@@ -13,7 +13,7 @@ use crate::compile::{build, BuildLimits, BuildOutput, BuildRequest, CompilerConf
 use crate::discover::{find_answer, find_source};
 use crate::model::{Case, ContestDir, Problem, ProblemKind};
 use crate::result::{now, round_score, CaseResult, ProblemResult, Status, SubtaskResult, Verdict};
-use crate::workspace::Worker;
+use crate::workspace::{retry_io, Worker};
 
 /// Judge-wide settings.
 #[derive(Debug, Clone)]
@@ -207,11 +207,10 @@ fn judge_inner(
             BuildOutput::Failed { log } => return empty(Status::CompileError, log),
             BuildOutput::Ok { exe, log } => {
                 compile_log = log;
-                let run_dir = worker.run_dir();
-                worker.clean_dir(&run_dir, &[])?;
+                let run_dir = worker.fresh_run_dir()?;
                 let name = format!("{}.exe", problem.source_name());
                 let dst = run_dir.join(&name);
-                std::fs::copy(&exe, &dst).with_context(|| format!("copying {}", exe.display()))?;
+                retry_io(|| std::fs::copy(&exe, &dst)).with_context(|| format!("copying {}", exe.display()))?;
                 if ctx.settings.patch_stack {
                     sandbox::set_stack_reserve(&dst, problem.max_memory_mb() << 20)?;
                 }
@@ -270,7 +269,20 @@ fn judge_inner(
 }
 
 /// `Ok(None)`: no source. `Ok(Some(Err))`: configuration problem.
-fn build_request(
+/// Compile ahead of judging (the compile pipeline); results land in the
+/// build cache, errors are reported later by the judging worker.
+pub(crate) fn prebuild(ctx: &JudgeContext, worker: &Worker, contestant: &str, problem: &Problem) {
+    if problem.kind == ProblemKind::Answer || ctx.cancel.load(Ordering::Relaxed) {
+        return;
+    }
+    if let Ok(Some(Ok(req))) = build_request(ctx, contestant, problem) {
+        if let Some((_, version)) = ctx.tools.get(req.compiler.lang) {
+            let _ = build(worker, &req, version, &ctx.dir.build_cache(), &ctx.settings.build);
+        }
+    }
+}
+
+pub(crate) fn build_request(
     ctx: &JudgeContext,
     contestant: &str,
     problem: &Problem,
@@ -395,12 +407,23 @@ fn run_case(
         spec.stdout = sandbox::Stdio::File(File::create(&out)?);
         out
     } else {
-        std::fs::copy(&input, run_dir.join(problem.input_file()))?;
+        let dst = run_dir.join(problem.input_file());
+        retry_io(|| std::fs::copy(&input, &dst)).with_context(|| format!("copying {}", case.input))?;
         run_dir.join(problem.output_file())
     };
     spec.limits.watch_files.push(output.clone());
 
     let r = worker.container().run(spec)?;
+    if std::env::var_os("OIJ_DEBUG").is_some() {
+        eprintln!(
+            "[w{}] run {}: {:?} wall {} ms cpu {} ms",
+            worker.index(),
+            case.input,
+            r.outcome,
+            r.wall_ms,
+            r.cpu_ms
+        );
+    }
     let mut cr = CaseResult {
         input: case.input.clone(),
         verdict: Verdict::AC,

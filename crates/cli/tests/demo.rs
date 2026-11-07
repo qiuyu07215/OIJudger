@@ -49,7 +49,8 @@ int main() { long long a, b; scanf("%lld%lld", &a, &b); printf("%lld\n", a + b);
     let stale = project.tasks(&engine, &Selection { only_stale: true, ..Default::default() }).unwrap();
     assert_eq!(stale.len(), 1);
     project.judge(&settings, &Selection { only_stale: true, ..Default::default() }, &|_| {}, &cancel).unwrap();
-    assert_eq!(project.result("bob", "sum").unwrap().unwrap().score, 100.0);
+    let r = project.result("bob", "sum").unwrap().unwrap();
+    assert_eq!(r.score, 100.0, "{r:#?}");
 }
 
 fn copy_dir(from: &std::path::Path, to: &std::path::Path) {

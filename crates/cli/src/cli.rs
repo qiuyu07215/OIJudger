@@ -86,6 +86,13 @@ pub enum Command {
         #[arg(short, long, default_value_t = 60.0)]
         threshold: f64,
     },
+    /// Convert a LemonLime contest (.cdf) into contest.toml next to it
+    ImportLemon {
+        cdf: PathBuf,
+        /// Overwrite an existing contest.toml
+        #[arg(long)]
+        force: bool,
+    },
     /// List detected compilers
     Compilers,
     /// Verify sandbox isolation and limits on this machine
@@ -200,6 +207,18 @@ pub fn run(cli: Cli) -> Result<i32> {
             }
             Ok(0)
         }
+        Command::ImportLemon { cdf, force } => {
+            let dir = cdf.parent().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+            let file = dir.join(judge_core::model::CONTEST_FILE);
+            anyhow::ensure!(force || !file.exists(), "{} exists (use --force)", file.display());
+            let im = lemon_import::import_file(&cdf)?;
+            im.contest.save(&dir)?;
+            println!("Imported {} problem(s) into {}", im.contest.problems.len(), file.display());
+            for w in im.warnings {
+                println!("  warning: {w}");
+            }
+            Ok(0)
+        }
         Command::Compilers => {
             let cs = settings.effective_compilers();
             if cs.is_empty() {
@@ -234,6 +253,20 @@ fn judge(project: &Project, settings: &AppSettings, sel: &Selection, verbose: bo
         &|ev| {
             let mut e = stderr.lock().unwrap();
             match ev {
+                Event::Compiled { done, total } => {
+                    if *done == 0 {
+                        let _ = writeln!(e, "Compiling {total} program(s)…");
+                    } else if done == total {
+                        let _ = writeln!(
+                            e,
+                            "\rCompiled {total} program(s) in {:.1}s{:20}",
+                            start.elapsed().as_secs_f64(),
+                            ""
+                        );
+                    } else if !verbose {
+                        let _ = write!(e, "\r[compile {done}/{total}]");
+                    }
+                }
                 Event::Started { total: t, workers } => {
                     total.store(*t, Ordering::Relaxed);
                     let _ = writeln!(e, "Judging {t} task(s) with {workers} worker(s)…");

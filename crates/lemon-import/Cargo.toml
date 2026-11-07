@@ -1,0 +1,11 @@
+[package]
+name = "lemon-import"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Import LemonLime contest files (.cdf)"
+
+[dependencies]
+judge-core.workspace = true
+anyhow.workspace = true
+serde_json.workspace = true

@@ -100,6 +100,8 @@ pub struct CellView {
     pub label: String,
     pub status: String,
     pub time_ms: u64,
+    /// Unix seconds.
+    pub judged_at: i64,
     /// Sources, data or settings changed since this result was produced.
     pub stale: bool,
 }
@@ -133,6 +135,7 @@ fn contest_view(project: &Project) -> CmdResult<ContestView> {
             label: s.label,
             status: format!("{:?}", s.status),
             time_ms: s.time_ms,
+            judged_at: s.judged_at,
             stale,
         });
     }

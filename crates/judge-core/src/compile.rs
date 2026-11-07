@@ -6,7 +6,7 @@ use std::process::Command;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::workspace::Worker;
+use crate::workspace::{retry_io, Worker};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
@@ -58,7 +58,7 @@ impl CompilerConfig {
     }
     /// First line of `--version`, used in cache keys and shown in the UI.
     pub fn version(&self) -> String {
-        Command::new(&self.path)
+        hidden(Command::new(&self.path))
             .arg("--version")
             .output()
             .ok()
@@ -106,6 +106,91 @@ pub fn detect_compilers() -> Vec<CompilerConfig> {
         }
     }
     out
+}
+
+/// A command that never opens a console window (the GUI has no console).
+fn hidden(mut c: Command) -> Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    c
+}
+
+fn includes_bits(p: &Path) -> bool {
+    std::fs::read(p).map(|d| d.windows(14).any(|w| w == b"bits/stdc++.h>")).unwrap_or(false)
+}
+
+/// Root of precompiled headers, readable by build sandboxes.
+pub fn pch_root() -> PathBuf {
+    crate::workspace::work_base().parent().map(|p| p.join("pch")).unwrap_or_else(|| PathBuf::from("pch"))
+}
+
+/// Precompiled `<bits/stdc++.h>` for this compiler and its arguments: an
+/// include directory containing `bits/stdc++.h.gch`, built once (outside the
+/// sandbox: it only compiles the compiler's own header) and reused by all
+/// later sessions. Parsing that header dominates the compile time of typical
+/// OI code, so this makes compilation about three times faster.
+pub fn ensure_pch(compiler: &CompilerConfig, version: &str) -> Option<PathBuf> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static BUILT: OnceLock<Mutex<HashMap<String, Option<PathBuf>>>> = OnceLock::new();
+
+    // Only flags that affect the preprocessor / code generation matter.
+    let flags: Vec<String> = split_args(&compiler.args)
+        .into_iter()
+        .filter(|a| !a.starts_with("-l") && a != "-static" && a != "-s")
+        .collect();
+    let mut h = blake3::Hasher::new();
+    h.update(compiler.path.to_string_lossy().as_bytes());
+    h.update(version.as_bytes());
+    h.update(flags.join("\0").as_bytes());
+    let key = h.finalize().to_hex()[..20].to_string();
+
+    let mut built = BUILT.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(r) = built.get(&key) {
+        return r.clone();
+    }
+    let root = pch_root();
+    if std::fs::create_dir_all(&root).is_err() || sandbox::Toolchain::grant_read(&root).is_err() {
+        built.insert(key, None);
+        return None;
+    }
+    let dir = root.join(&key);
+    let gch = dir.join("bits").join("stdc++.h.gch");
+    let result = if gch.is_file() {
+        Some(dir)
+    } else {
+        let make = || -> Option<PathBuf> {
+            std::fs::create_dir_all(gch.parent()?).ok()?;
+            let wrapper = dir.join("wrapper.hpp");
+            std::fs::write(&wrapper, "#include <bits/stdc++.h>\n").ok()?;
+            let tmp = dir.join("bits").join("stdc++.h.gch.tmp");
+            let ok = hidden(Command::new(&compiler.path))
+                .args(&flags)
+                .args(["-x", "c++-header"])
+                .arg(&wrapper)
+                .arg("-o")
+                .arg(&tmp)
+                .output()
+                .ok()?
+                .status
+                .success();
+            if !ok {
+                return None;
+            }
+            std::fs::rename(&tmp, &gch).ok()?;
+            Some(dir.clone())
+        };
+        let r = make();
+        if r.is_none() {
+            log::warn!("could not build precompiled header for {}", compiler.path.display());
+        }
+        r
+    };
+    built.insert(key, result.clone());
+    result
 }
 
 /// Split an argument string, honouring double quotes.
@@ -186,6 +271,40 @@ fn read_log(path: &Path) -> String {
     s
 }
 
+/// Exclusive right to build one cache key; released (waking waiters) on drop.
+struct Claim(String);
+
+type InFlight = (std::sync::Mutex<std::collections::HashSet<String>>, std::sync::Condvar);
+
+fn in_flight() -> &'static InFlight {
+    static S: std::sync::OnceLock<InFlight> = std::sync::OnceLock::new();
+    S.get_or_init(Default::default)
+}
+
+impl Claim {
+    /// `Some` if the caller should build `key`; `None` after waiting for
+    /// another builder of the same key to finish (check the cache again).
+    fn take(key: &str) -> Option<Claim> {
+        let (m, cv) = in_flight();
+        let mut set = m.lock().unwrap_or_else(|e| e.into_inner());
+        if set.insert(key.to_string()) {
+            return Some(Claim(key.to_string()));
+        }
+        while set.contains(key) {
+            set = cv.wait(set).unwrap_or_else(|e| e.into_inner());
+        }
+        None
+    }
+}
+
+impl Drop for Claim {
+    fn drop(&mut self) {
+        let (m, cv) = in_flight();
+        m.lock().unwrap_or_else(|e| e.into_inner()).remove(&self.0);
+        cv.notify_all();
+    }
+}
+
 /// Settings for compilation in the sandbox.
 #[derive(Debug, Clone)]
 pub struct BuildLimits {
@@ -212,16 +331,30 @@ pub fn build(
     let cached_exe = cache_dir.join(format!("{key}.exe"));
     let cached_log = cache_dir.join(format!("{key}.log"));
     let cached_fail = cache_dir.join(format!("{key}.fail"));
-    if cached_exe.is_file() {
-        return Ok(BuildOutput::Ok { exe: cached_exe, log: read_log(&cached_log) });
-    }
-    if cached_fail.is_file() {
-        return Ok(BuildOutput::Failed { log: read_log(&cached_fail) });
-    }
+    // Several workers (the compile pipeline and the judging workers) may
+    // ask for the same build; only one compiles, the others wait for it.
+    let _claim = loop {
+        if cached_exe.is_file() {
+            return Ok(BuildOutput::Ok { exe: cached_exe, log: read_log(&cached_log) });
+        }
+        if cached_fail.is_file() {
+            return Ok(BuildOutput::Failed { log: read_log(&cached_fail) });
+        }
+        if let Some(c) = Claim::take(&key) {
+            break c;
+        }
+    };
 
-    let dir = worker.build_dir();
-    worker.clean_dir(&dir, &[])?;
-    let mut args: Vec<String> = split_args(&req.compiler.args);
+    let dir = worker.fresh_build_dir()?;
+    let mut args: Vec<String> = Vec::new();
+    if req.compiler.lang == Lang::Cpp && req.files.iter().any(|(p, _, main)| *main && includes_bits(p)) {
+        if let Some(pch) = ensure_pch(&req.compiler, compiler_version) {
+            // GCC finds bits/stdc++.h.gch here first; with mismatching flags
+            // it silently falls back to the real header.
+            args.push(format!("-I{}", pch.display()));
+        }
+    }
+    args.extend(split_args(&req.compiler.args));
     args.extend(split_args(&req.extra_args));
     args.push("-o".into());
     args.push("__oij_out.exe".into());
@@ -230,7 +363,7 @@ pub fn build(
         if let Some(parent) = dst.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::copy(src, &dst).with_context(|| format!("copying {}", src.display()))?;
+        retry_io(|| std::fs::copy(src, &dst)).with_context(|| format!("copying {}", src.display()))?;
         if *main {
             args.push(name.clone());
         }
@@ -247,6 +380,7 @@ pub fn build(
     l.wall_ms = limits.cpu_ms * 2 + 5000;
     l.memory_per_job = true;
     l.max_processes = 16;
+    l.affinity = worker.affinity();
     l.output_bytes = 4 << 20;
     l.watch_files = vec![log_path.clone()];
 
@@ -278,8 +412,10 @@ pub fn build(
     if r.outcome == sandbox::Outcome::Ok && out_exe.is_file() {
         std::fs::write(&cached_log, &text)?;
         let tmp = cache_dir.join(format!("{key}.{}.tmp", worker.index()));
-        std::fs::copy(&out_exe, &tmp)?;
-        std::fs::rename(&tmp, &cached_exe).or_else(|e| if cached_exe.is_file() { Ok(()) } else { Err(e) })?;
+        retry_io(|| std::fs::copy(&out_exe, &tmp)).context("storing compiled program")?;
+        retry_io(|| std::fs::rename(&tmp, &cached_exe))
+            .or_else(|e| if cached_exe.is_file() { Ok(()) } else { Err(e) })
+            .context("storing compiled program")?;
         Ok(BuildOutput::Ok { exe: cached_exe, log: text })
     } else {
         match r.outcome {

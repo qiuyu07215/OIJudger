@@ -2101,7 +2101,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "blake3",
- "crossbeam-channel",
  "log",
  "memmap2",
  "parking_lot",
@@ -2121,6 +2120,15 @@ checksum = "0fbe853b403ae61a04233030ae8a79d94975281ed9770a1f9e246732b534b28d"
 dependencies = [
  "bitflags 2.13.2",
  "serde",
+]
+
+[[package]]
+name = "lemon-import"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "judge-core",
+ "serde_json",
 ]
 
 [[package]]
@@ -2591,6 +2599,7 @@ dependencies = [
  "clap",
  "export",
  "judge-core",
+ "lemon-import",
  "parking_lot",
  "sandbox",
  "serde",

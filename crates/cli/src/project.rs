@@ -30,15 +30,26 @@ pub struct Selection {
 }
 
 impl Project {
-    /// Open a contest directory. Without `contest.toml`, problems are detected
-    /// from `data/` and the configuration is written.
+    /// Open a contest directory. Without `contest.toml`, a LemonLime `.cdf`
+    /// in the folder is imported, otherwise problems are detected from
+    /// `data/`; the configuration is then written.
     pub fn open(root: &Path) -> Result<Project> {
+        // A .cdf file itself may be given: open its folder.
+        let root = if root.is_file() && root.extension().is_some_and(|e| e.eq_ignore_ascii_case("cdf")) {
+            root.parent().unwrap_or(root)
+        } else {
+            root
+        };
         anyhow::ensure!(root.is_dir(), "{} is not a directory", root.display());
         // Checkers and compilers run in other directories: always absolute.
         let root = &absolute(root);
         let dir = ContestDir::new(root);
         let contest = if root.join(CONTEST_FILE).is_file() {
             Contest::load(root)?
+        } else if let Some(cdf) = lemon_import::find_cdf(root) {
+            let imported = lemon_import::import_file(&cdf)?;
+            imported.contest.save(root)?;
+            imported.contest
         } else {
             let c = Contest {
                 title: root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),

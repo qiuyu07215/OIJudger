@@ -15,7 +15,6 @@ toml.workspace = true
 log.workspace = true
 blake3.workspace = true
 memmap2.workspace = true
-crossbeam-channel.workspace = true
 parking_lot.workspace = true
 
 [dev-dependencies]

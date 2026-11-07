@@ -6,6 +6,7 @@ members = [
     "crates/store",
     "crates/analysis",
     "crates/export",
+    "crates/lemon-import",
     "crates/cli",
     "app/src-tauri",
 ]

@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::OnceLock;
 
 use anyhow::{Context, Result};
@@ -23,6 +23,12 @@ pub struct Task {
 
 #[derive(Debug, Clone)]
 pub enum Event {
+    /// Compile phase progress: `done` of `total` programs (and helper
+    /// checkers / interactors) prepared.
+    Compiled {
+        done: usize,
+        total: usize,
+    },
     /// Setup finished; `total` tasks will be judged by `workers` workers.
     Started {
         total: usize,
@@ -210,8 +216,31 @@ impl Engine {
         self.prepare_toolchains(sink)?;
         let want =
             if self.settings.workers == 0 { crate::workspace::default_worker_count() } else { self.settings.workers };
-        let ws = Workspace::new(want.min(tasks.len()).max(1), self.settings.pin_cores)
+        let workers = want.min(tasks.len()).max(1);
+        // Two phases: first compile everything on all logical processors
+        // (fast, and nothing is being timed yet), then judge on the pinned
+        // workers without compilers competing for the CPU.
+        let needs_compile = self.contest.problems.iter().any(|p| p.kind != crate::model::ProblemKind::Answer);
+        let builders = if needs_compile {
+            std::env::var("OIJ_BUILDERS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4))
+                .clamp(1, 32)
+        } else {
+            0
+        };
+        let t_setup = std::time::Instant::now();
+        let ws = Workspace::with_builders(workers, self.settings.pin_cores, builders)
             .context("setting up sandbox workers")?;
+        if std::env::var_os("OIJ_DEBUG").is_some() {
+            eprintln!(
+                "sandbox setup: {} workers + {} builders in {} ms",
+                workers,
+                builders,
+                t_setup.elapsed().as_millis()
+            );
+        }
 
         let testlib = self.testlib_path()?;
         let cells: HashMap<String, OnceLock<ProblemTools>> =
@@ -233,36 +262,64 @@ impl Engine {
             problem_hashes: &problem_hashes,
             cancel,
         };
-        sink(Event::Started { total: tasks.len(), workers: ws.workers.len() });
-
-        let (tx, rx) = crossbeam_channel::unbounded::<Task>();
-        for t in tasks {
-            tx.send(t).unwrap();
+        let order = tasks;
+        if !ws.builders.is_empty() {
+            // Helper programs first (they are slow to build), then submissions.
+            let mut helpers: Vec<&Problem> = Vec::new();
+            for t in &order {
+                if let Some(p) = self.contest.problem(&t.problem) {
+                    if (p.checker.is_some() || p.interactor.is_some()) && !helpers.iter().any(|h| h.name == p.name) {
+                        helpers.push(p);
+                    }
+                }
+            }
+            let total = helpers.len() + order.len();
+            let next = AtomicUsize::new(0);
+            let done = AtomicUsize::new(0);
+            sink(Event::Compiled { done: 0, total });
+            std::thread::scope(|s| {
+                for builder in &ws.builders {
+                    let (ctx, order, helpers, next, done, problem_tools) =
+                        (&ctx, &order, &helpers, &next, &done, &problem_tools);
+                    s.spawn(move || {
+                        while !cancel.load(Ordering::Relaxed) {
+                            let i = next.fetch_add(1, Ordering::Relaxed);
+                            if i < helpers.len() {
+                                problem_tools(builder, helpers[i]);
+                            } else {
+                                let Some(task) = order.get(i - helpers.len()) else { break };
+                                if let Some(problem) = self.contest.problem(&task.problem) {
+                                    crate::judge::prebuild(ctx, builder, &task.contestant, problem);
+                                }
+                            }
+                            sink(Event::Compiled { done: done.fetch_add(1, Ordering::Relaxed) + 1, total });
+                        }
+                    });
+                }
+            });
         }
-        drop(tx);
+        if cancel.load(Ordering::Relaxed) {
+            return Ok(());
+        }
 
+        sink(Event::Started { total: order.len(), workers: ws.workers.len() });
+        let next_task = AtomicUsize::new(0);
         std::thread::scope(|s| {
             for worker in &ws.workers {
-                let rx = rx.clone();
-                let ctx = &ctx;
-                s.spawn(move || {
-                    while let Ok(task) = rx.recv() {
-                        if cancel.load(Ordering::Relaxed) {
-                            break;
-                        }
-                        let Some(problem) = self.contest.problem(&task.problem) else { continue };
-                        sink(Event::TaskStarted { worker: worker.index(), task: task.clone() });
-                        let mut on_case = |si: usize, c: &CaseResult| {
-                            sink(Event::Case {
-                                worker: worker.index(),
-                                task: task.clone(),
-                                subtask: si,
-                                case: c.clone(),
-                            })
-                        };
-                        if let Some(result) = judge_problem(ctx, worker, &task.contestant, problem, &mut on_case) {
-                            sink(Event::TaskDone { worker: worker.index(), result });
-                        }
+                let (ctx, order, next_task) = (&ctx, &order, &next_task);
+                s.spawn(move || loop {
+                    if cancel.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    let i = next_task.fetch_add(1, Ordering::Relaxed);
+                    let Some(task) = order.get(i) else { break };
+                    let Some(problem) = self.contest.problem(&task.problem) else { continue };
+                    sink(Event::TaskStarted { worker: worker.index(), task: task.clone() });
+                    let mut on_case = |si: usize, c: &CaseResult| {
+                        sink(Event::Case { worker: worker.index(), task: task.clone(), subtask: si, case: c.clone() })
+                    };
+                    if let Some(result) = judge_problem(ctx, worker, &task.contestant, problem, &mut on_case) {
+                        sink(Event::TaskDone { worker: worker.index(), result });
                     }
                 });
             }

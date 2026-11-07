@@ -28,8 +28,8 @@ use windows_sys::Win32::System::JobObjects::{
 use windows_sys::Win32::System::Threading::{
     CreateProcessW, DeleteProcThreadAttributeList, GetExitCodeProcess, InitializeProcThreadAttributeList, ResumeThread,
     UpdateProcThreadAttribute, WaitForSingleObject, CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT,
-    EXTENDED_STARTUPINFO_PRESENT, LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_INFORMATION, STARTF_USESTDHANDLES,
-    STARTUPINFOEXW,
+    DETACHED_PROCESS, EXTENDED_STARTUPINFO_PRESENT, LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_INFORMATION,
+    STARTF_USESTDHANDLES, STARTUPINFOEXW,
 };
 use windows_sys::Win32::System::IO::{CreateIoCompletionPort, GetQueuedCompletionStatus, OVERLAPPED};
 
@@ -481,6 +481,11 @@ fn spawn(sid: Option<&Sid>, mut spec: RunSpec) -> Result<Child> {
     let cwd = wide(spec.cwd.as_os_str());
     let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
 
+    // Single-process runs get no console at all: CREATE_NO_WINDOW would still
+    // start a hidden conhost.exe per run (~15 ms); std streams are redirected
+    // anyway. Multi-process runs (compilers) keep a hidden console so their
+    // children inherit it instead of each opening a visible one.
+    let console = if spec.limits.max_processes > 1 { CREATE_NO_WINDOW } else { DETACHED_PROCESS };
     let ok = unsafe {
         CreateProcessW(
             app.as_ptr(),
@@ -488,7 +493,7 @@ fn spawn(sid: Option<&Sid>, mut spec: RunSpec) -> Result<Child> {
             std::ptr::null(),
             std::ptr::null(),
             1,
-            EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED,
+            EXTENDED_STARTUPINFO_PRESENT | console | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED,
             env.as_ptr() as *const _,
             cwd.as_ptr(),
             &si.StartupInfo,

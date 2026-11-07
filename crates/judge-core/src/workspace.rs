@@ -1,8 +1,35 @@
 //! Per-worker sandbox identities and scratch directories.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
 
 use anyhow::{Context, Result};
+use parking_lot::Mutex;
+
+/// Delete directories on a background thread. Antivirus scanners can block
+/// deleting a freshly written executable for seconds; judging never waits.
+pub fn defer_delete(path: PathBuf) {
+    static TX: OnceLock<std::sync::Mutex<std::sync::mpsc::Sender<PathBuf>>> = OnceLock::new();
+    let tx = TX.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel::<PathBuf>();
+        std::thread::Builder::new()
+            .name("oij-deleter".into())
+            .spawn(move || {
+                for p in rx {
+                    for i in 0..50u64 {
+                        if std::fs::remove_dir_all(&p).is_ok() || !p.exists() {
+                            break;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(20 * (i + 1)));
+                    }
+                }
+            })
+            .expect("spawn deleter thread");
+        std::sync::Mutex::new(tx)
+    });
+    let _ = tx.lock().map(|t| t.send(path));
+}
 
 /// One judging worker: its own AppContainer and scratch directory, so
 /// concurrently running programs can never see each other's files.
@@ -14,6 +41,10 @@ pub struct Worker {
     build_container: sandbox::Container,
     root: PathBuf,
     affinity: usize,
+    /// Current per-task subdirectories of `run/` and `build/`.
+    run_cur: Mutex<PathBuf>,
+    build_cur: Mutex<PathBuf>,
+    seq: AtomicU64,
 }
 
 impl Worker {
@@ -32,13 +63,30 @@ impl Worker {
     pub fn root(&self) -> &Path {
         &self.root
     }
-    /// Compilation scratch directory.
+    /// Current compilation scratch directory.
     pub fn build_dir(&self) -> PathBuf {
-        self.root.join("build")
+        self.build_cur.lock().clone()
     }
-    /// Directory the contestant program runs in.
+    /// Current directory the contestant program runs in.
     pub fn run_dir(&self) -> PathBuf {
-        self.root.join("run")
+        self.run_cur.lock().clone()
+    }
+    /// Switch to a new, empty run directory; the previous one is deleted in
+    /// the background.
+    pub fn fresh_run_dir(&self) -> Result<PathBuf> {
+        self.rotate(&self.run_cur, "run", "t")
+    }
+    /// Switch to a new, empty build directory.
+    pub fn fresh_build_dir(&self) -> Result<PathBuf> {
+        self.rotate(&self.build_cur, "build", "b")
+    }
+    fn rotate(&self, cur: &Mutex<PathBuf>, base: &str, prefix: &str) -> Result<PathBuf> {
+        let n = self.seq.fetch_add(1, Ordering::Relaxed);
+        let dir = self.root.join(base).join(format!("{prefix}{n}"));
+        std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+        let old = std::mem::replace(&mut *cur.lock(), dir.clone());
+        defer_delete(old);
+        Ok(dir)
     }
     /// Scratch directory for checkers / interactors.
     pub fn check_dir(&self) -> PathBuf {
@@ -64,6 +112,23 @@ impl Worker {
         }
         Ok(())
     }
+}
+
+/// Retry a file operation that may fail transiently because an antivirus
+/// scanner or a just-terminated process still holds the file.
+pub fn retry_io<T>(mut f: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
+    let mut delay = 5;
+    for _ in 0..8 {
+        match f() {
+            Ok(v) => return Ok(v),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(e),
+            Err(_) => {
+                std::thread::sleep(std::time::Duration::from_millis(delay));
+                delay = (delay * 2).min(200);
+            }
+        }
+    }
+    f()
 }
 
 /// A just-terminated process may hold its files for a few milliseconds.
@@ -92,6 +157,8 @@ fn remove_file_retry(p: &Path) -> std::io::Result<()> {
 /// All workers of one judging session.
 pub struct Workspace {
     pub workers: Vec<Worker>,
+    /// Extra workers that only compile (the compile pipeline).
+    pub builders: Vec<Worker>,
     root: PathBuf,
     /// Held open without sharing so other instances know we are alive.
     lock: Option<std::fs::File>,
@@ -122,9 +189,14 @@ pub fn default_worker_count() -> usize {
 }
 
 impl Workspace {
-    /// Create `count` workers (0 = default). Worker `i` is pinned to the
-    /// i-th performance core when `pin` is set and enough cores exist.
+    /// Create `count` judging workers (0 = default) and no compile workers.
     pub fn new(count: usize, pin: bool) -> Result<Workspace> {
+        Self::with_builders(count, pin, 0)
+    }
+
+    /// `count` judging workers plus `builders` compile workers. Judging
+    /// worker `i` is pinned to the i-th performance core when `pin` is set.
+    pub fn with_builders(count: usize, pin: bool, builders: usize) -> Result<Workspace> {
         let count = if count == 0 { default_worker_count() } else { count };
         let base = work_base();
         cleanup_stale(&base);
@@ -140,27 +212,57 @@ impl Workspace {
                 .open(root.join(LOCK_FILE))?
         };
         let masks = sandbox::performance_core_masks();
+        let pinned = pin && count <= masks.len();
         let mut workers = Vec::with_capacity(count);
-        for i in 0..count {
-            // Per-process names: a second running instance must not share
-            // container identities (and thus file access) with this one.
-            let pid = std::process::id();
-            let container = sandbox::Container::open(&run_profile(pid, i))
-                .with_context(|| format!("creating sandbox for worker {i}"))?;
-            let build_container = sandbox::Container::open_scratch(&build_profile(pid, i))
-                .with_context(|| format!("creating build sandbox for worker {i}"))?;
-            let wroot = root.join(format!("w{i}"));
-            for d in ["build", "run", "check"] {
-                std::fs::create_dir_all(wroot.join(d))?;
+        let mut extra = Vec::with_capacity(builders);
+        for i in 0..count + builders {
+            let affinity = match (i < count, pinned) {
+                (true, true) => masks[i],
+                (true, false) => 0,
+                // Builders compile before judging starts: no pinning.
+                (false, _) => 0,
+            };
+            let w = Worker::create(&root, i, affinity)?;
+            if i < count {
+                workers.push(w);
+            } else {
+                extra.push(w);
             }
-            let run = wroot.join("run");
-            container.grant_dir(&run).with_context(|| format!("granting {}", run.display()))?;
-            let build = wroot.join("build");
-            build_container.grant_dir(&build).with_context(|| format!("granting {}", build.display()))?;
-            let affinity = if pin && count <= masks.len() { masks[i] } else { 0 };
-            workers.push(Worker { index: i, container, build_container, root: wroot, affinity });
         }
-        Ok(Workspace { workers, root, lock: Some(lock) })
+        Ok(Workspace { workers, builders: extra, root, lock: Some(lock) })
+    }
+}
+
+impl Worker {
+    fn create(root: &Path, i: usize, affinity: usize) -> Result<Worker> {
+        // Per-process names: a second running instance must not share
+        // container identities (and thus file access) with this one.
+        let pid = std::process::id();
+        let container = sandbox::Container::open(&run_profile(pid, i))
+            .with_context(|| format!("creating sandbox for worker {i}"))?;
+        let build_container = sandbox::Container::open_scratch(&build_profile(pid, i))
+            .with_context(|| format!("creating build sandbox for worker {i}"))?;
+        let wroot = root.join(format!("w{i}"));
+        for d in ["build", "run", "check"] {
+            std::fs::create_dir_all(wroot.join(d))?;
+        }
+        let run = wroot.join("run");
+        container.grant_dir(&run).with_context(|| format!("granting {}", run.display()))?;
+        let build = wroot.join("build");
+        build_container.grant_dir(&build).with_context(|| format!("granting {}", build.display()))?;
+        let (run0, build0) = (run.join("t0"), build.join("b0"));
+        std::fs::create_dir_all(&run0)?;
+        std::fs::create_dir_all(&build0)?;
+        Ok(Worker {
+            index: i,
+            container,
+            build_container,
+            root: wroot,
+            affinity,
+            run_cur: Mutex::new(run0),
+            build_cur: Mutex::new(build0),
+            seq: AtomicU64::new(1),
+        })
     }
 }
 
@@ -184,11 +286,12 @@ const MAX_WORKERS: usize = 64;
 
 impl Drop for Workspace {
     fn drop(&mut self) {
-        let n = self.workers.len();
+        let n = self.workers.len() + self.builders.len();
         self.workers.clear();
+        self.builders.clear();
         delete_profiles(std::process::id(), n);
         drop(self.lock.take());
-        let _ = std::fs::remove_dir_all(&self.root);
+        defer_delete(self.root.clone());
     }
 }
 
