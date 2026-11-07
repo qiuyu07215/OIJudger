@@ -1,0 +1,44 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/sandbox",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["OIJudger contributors"]
+
+[workspace.dependencies]
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+log = "0.4"
+blake3 = "1"
+memmap2 = "0.9"
+regex = "1"
+crossbeam-channel = "0.5"
+parking_lot = "0.12"
+walkdir = "2"
+rusqlite = { version = "0.32", features = ["bundled"] }
+rust_xlsxwriter = "0.79"
+clap = { version = "4", features = ["derive"] }
+windows-sys = "0.59"
+tempfile = "3"
+
+sandbox = { path = "crates/sandbox" }
+judge-core = { path = "crates/judge-core" }
+store = { path = "crates/store" }
+analysis = { path = "crates/analysis" }
+export = { path = "crates/export" }
+lemon-import = { path = "crates/lemon-import" }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "unwind"
