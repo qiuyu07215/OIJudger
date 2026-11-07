@@ -80,6 +80,8 @@ fn main() {
             commands::get_stats,
             commands::export_results,
             commands::similarity,
+            commands::cache_usage,
+            commands::clear_cache,
         ])
         .run(tauri::generate_context!())
         .expect("error while running OIJudger");

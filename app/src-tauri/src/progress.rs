@@ -43,6 +43,8 @@ pub struct ProgressView {
     /// Compile phase: programs prepared / to prepare.
     pub compile_done: usize,
     pub compile_total: usize,
+    /// Compiling is paused because the compile cache is over its limit.
+    pub compile_paused: bool,
     pub total: usize,
     pub done: usize,
     pub workers: Vec<Option<WorkerView>>,
@@ -81,6 +83,7 @@ impl Progress {
                 self.view.workers = vec![None; *workers];
             }
             Event::Message(m) => self.view.messages.push(m.clone()),
+            Event::CompilePaused(p) => self.view.compile_paused = *p,
             Event::TaskStarted { worker, task } => {
                 if let Some(w) = self.view.workers.get_mut(*worker) {
                     *w = Some(WorkerView {

@@ -82,6 +82,7 @@ const zh = {
     title: "设置", compilers: "编译器", detect: "自动检测", path: "路径", args: "编译参数", version: "版本",
     noCompiler: "没有找到编译器。请安装 MinGW，或使用自带编译器的便携版。", judging: "评测",
     workers: "并行线程数（0 = 自动，推荐 {n}）", pin: "将线程绑定到性能核（计时更稳定）", overlap: "编译与评测同时进行（编译器只用评测之外的核心）",
+    cacheLimit: "编译缓存上限（MB，0 = 不限；超过时暂停编译，并删除已评测完的程序）",
     patchStack: "栈空间 = 内存限制（避免 Windows 默认 2MB 栈导致递归爆栈）", outputLimit: "输出上限 (MiB)",
     compileTime: "编译时间限制 (ms)", compileMemory: "编译内存限制 (MiB)", checkerTime: "校验器时间限制 (ms)",
     checkerMemory: "校验器内存限制 (MiB)", language: "界面语言", selftest: "沙箱自检",
@@ -115,14 +116,20 @@ const zh = {
     close: "关闭比赛", reload: "刷新选手与试题", detect: "自动识别试题", export: "导出成绩",
     judgeAll: "测试全部", judgeStale: "测试未测试 / 已变化", judgeSelected: "测试选中选手", stop: "停止评测",
     showJudging: "显示评测窗口", settings: "设置…", selftest: "沙箱自检…", plagiarism: "代码查重",
+    clearCache: "清理编译缓存…",
     about: "关于 OIJudger", aboutText: "OIJudger {v} —— 沙箱隔离、高效的 OI 本地评测工具。目录结构与 LemonLime 兼容。",
+  },
+  cache: {
+    title: "清理编译缓存", empty: "编译缓存是空的",
+    confirm: "删除本比赛的编译缓存（{n} 个文件，约 {mb} MB）？评测结果会保留；之后再评测时需要重新编译。",
+    done: "已清理，释放约 {mb} MB",
   },
   statusbar: {
     ready: "就绪", judging: "评测中 {done}/{total}", contestants: "{n} 名选手", problems: "{n} 道试题",
     stale: "{n} 项待评测", show: "点击查看评测窗口",
   },
   judging: {
-    title: "评测", compiling: "编译中 {done}/{total}", compiledShort: "已编译 {done}/{total}", background: "后台运行", stop: "停止", close: "关闭", log: "评测记录", empty: "等待评测结果…",
+    title: "评测", compiling: "编译中 {done}/{total}", compiledShort: "已编译 {done}/{total}", paused: "编译已暂停（缓存已满）", pausedHint: "编译缓存已达上限（见“设置”），等已评测的程序从缓存中删除后自动继续", background: "后台运行", stop: "停止", close: "关闭", log: "评测记录", empty: "等待评测结果…",
     point: "测试点 {n}", total: "总分", follow: "自动滚动",
   },
   msg: {
@@ -213,6 +220,7 @@ const en: typeof zh = {
     title: "Settings", compilers: "Compilers", detect: "Detect", path: "Path", args: "Arguments", version: "Version",
     noCompiler: "No compiler found. Install MinGW or use the portable bundle with a compiler.", judging: "Judging",
     workers: "Parallel workers (0 = auto, recommended {n})", pin: "Pin workers to performance cores (stabler timing)", overlap: "Compile and judge at the same time (compilers use only the cores not used for timing)",
+    cacheLimit: "Compile cache limit (MB, 0 = unlimited; when exceeded, compiling pauses and judged programs are removed)",
     patchStack: "Stack size = memory limit (avoids Windows' default 2 MiB stack)", outputLimit: "Output limit (MiB)",
     compileTime: "Compile time limit (ms)", compileMemory: "Compile memory limit (MiB)",
     checkerTime: "Checker time limit (ms)", checkerMemory: "Checker memory limit (MiB)", language: "Language",
@@ -247,14 +255,20 @@ const en: typeof zh = {
     close: "Close contest", reload: "Reload contestants and problems", detect: "Detect problems", export: "Export results",
     judgeAll: "Judge all", judgeStale: "Judge new / changed", judgeSelected: "Judge selected contestants", stop: "Stop judging",
     showJudging: "Show judging window", settings: "Settings…", selftest: "Sandbox self test…", plagiarism: "Similarity check",
+    clearCache: "Clear compile cache…",
     about: "About OIJudger", aboutText: "OIJudger {v} — a fast, sandboxed local judge for OI contests, compatible with LemonLime folders.",
+  },
+  cache: {
+    title: "Clear compile cache", empty: "The compile cache is empty",
+    confirm: "Delete this contest's compile cache ({n} files, about {mb} MB)? Results are kept; programs will be compiled again the next time they are judged.",
+    done: "Cache cleared, about {mb} MB freed",
   },
   statusbar: {
     ready: "Ready", judging: "Judging {done}/{total}", contestants: "{n} contestants", problems: "{n} problems",
     stale: "{n} to judge", show: "Click to show the judging window",
   },
   judging: {
-    title: "Judging", compiling: "Compiling {done}/{total}", compiledShort: "compiled {done}/{total}", background: "Run in background", stop: "Stop", close: "Close", log: "Log", empty: "Waiting for results…",
+    title: "Judging", compiling: "Compiling {done}/{total}", compiledShort: "compiled {done}/{total}", paused: "compiling paused (cache full)", pausedHint: "The compile cache reached its limit (see Settings); compiling resumes once judged programs are removed from the cache", background: "Run in background", stop: "Stop", close: "Close", log: "Log", empty: "Waiting for results…",
     point: "test point {n}", total: "total", follow: "Auto scroll",
   },
   msg: {

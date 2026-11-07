@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::OnceLock;
 
 use anyhow::{Context, Result};
@@ -49,6 +49,9 @@ pub enum Event {
         worker: usize,
         result: ProblemResult,
     },
+    /// Compiling paused (true) because the compile cache is over its limit,
+    /// or resumed (false).
+    CompilePaused(bool),
     /// Informational message (setup steps, warnings).
     Message(String),
 }
@@ -179,7 +182,11 @@ impl Engine {
         let mut limits = self.settings.build.clone();
         limits.cpu_ms = limits.cpu_ms.max(60_000); // testlib is heavy to compile
         match build(worker, &req, version, &self.dir.build_cache(), &limits) {
-            Ok(BuildOutput::Ok { exe, .. }) => Ok(exe),
+            Ok(BuildOutput::Ok { exe, lease, .. }) => {
+                // Used for the whole session: never evict it.
+                lease.keep_forever();
+                Ok(exe)
+            }
             Ok(BuildOutput::Failed { log }) => Err(format!("{rel} failed to compile:\n{log}")),
             Err(e) => Err(format!("{rel}: {e:#}")),
         }
@@ -301,9 +308,45 @@ impl Engine {
                 sink(Event::TaskDone { worker: worker.index(), result });
             }
         };
-        let prebuild = |worker: &Worker, task: &Task| {
-            if let Some(problem) = self.contest.problem(&task.problem) {
-                crate::judge::prebuild(&ctx, worker, &task.contestant, problem);
+        // Compile cache limit (overlapped mode only: in two-phase mode every
+        // program must exist before judging starts).
+        let cache_dir = self.dir.build_cache();
+        let limit = if overlap { self.settings.cache_limit_mb << 20 } else { 0 };
+        crate::compile::reset_released();
+        let cache_used = AtomicU64::new(if limit > 0 { crate::compile::cache_usage(&cache_dir).1 } else { 0 });
+        let prebuild = |worker: &Worker, task: &Task| -> Option<crate::compile::Lease> {
+            let problem = self.contest.problem(&task.problem)?;
+            let (lease, added) = crate::judge::prebuild(&ctx, worker, &task.contestant, problem)?;
+            cache_used.fetch_add(added, Ordering::Relaxed);
+            Some(lease)
+        };
+        // Is there room in the cache for another program? Over the limit,
+        // remove programs that are not in use (judged ones first) down to 90%.
+        let room_ns = AtomicU64::new(0); // time spent making room (OIJ_DEBUG)
+        let make_room = || -> bool {
+            if limit == 0 || cache_used.load(Ordering::Relaxed) <= limit {
+                return true;
+            }
+            let t0 = std::time::Instant::now();
+            let _t = TimeGuard(&room_ns, t0);
+            let used = crate::compile::cache_usage(&cache_dir).1;
+            let freed = if used > limit { crate::compile::evict(&cache_dir, used - limit / 10 * 9) } else { 0 };
+            let now = used.saturating_sub(freed);
+            cache_used.store(now, Ordering::Relaxed);
+            now <= limit
+        };
+        let paused = AtomicBool::new(false);
+        let note_pause = |pause: bool| {
+            if paused.swap(pause, Ordering::Relaxed) != pause {
+                sink(Event::CompilePaused(pause));
+                sink(Event::Message(if pause {
+                    format!(
+                        "Compile cache is over the limit ({} MB): compiling paused until judged programs are removed",
+                        limit >> 20
+                    )
+                } else {
+                    "Compiling resumed".to_string()
+                }));
             }
         };
 
@@ -311,14 +354,37 @@ impl Engine {
             sink(Event::Compiled { done: 0, total: compile_total });
             sink(Event::Started { total: order.len(), workers: ws.workers.len() });
             let n = order.len();
-            let sched = Mutex::new(Schedule { next_helper: 0, next_build: 0, building: 0, ready: VecDeque::new() });
+            let sched =
+                Mutex::new(Schedule { next_helper: 0, next_build: 0, building: 0, judging: 0, ready: VecDeque::new() });
             let wake = Condvar::new();
             std::thread::scope(|s| {
                 for builder in &ws.builders {
                     let (sched, wake, helpers, order) = (&sched, &wake, &helpers, &order);
                     let (prebuild, problem_tools, note_compiled) = (&prebuild, &problem_tools, &note_compiled);
+                    let (make_room, note_pause) = (&make_room, &note_pause);
                     s.spawn(move || {
                         while !cancel.load(Ordering::Relaxed) {
+                            let more = {
+                                let q = sched.lock();
+                                q.next_helper < helpers.len() || q.next_build < n
+                            };
+                            if !more {
+                                break;
+                            }
+                            // Cache full: wait for judging to free programs, unless
+                            // nothing is in flight that could (then go on regardless).
+                            if !make_room() {
+                                let mut q = sched.lock();
+                                if q.next_helper >= helpers.len()
+                                    && !(q.ready.is_empty() && q.building == 0 && q.judging == 0)
+                                {
+                                    note_pause(true);
+                                    wake.wait_for(&mut q, std::time::Duration::from_millis(500));
+                                    continue;
+                                }
+                            } else {
+                                note_pause(false);
+                            }
                             let job = {
                                 let mut q = sched.lock();
                                 if q.next_helper < helpers.len() {
@@ -337,10 +403,10 @@ impl Engine {
                                     problem_tools(builder, helpers[h]);
                                 }
                                 Ok(i) => {
-                                    prebuild(builder, &order[i]);
+                                    let lease = prebuild(builder, &order[i]);
                                     let mut q = sched.lock();
                                     q.building -= 1;
-                                    q.ready.push_back(i);
+                                    q.ready.push_back((i, lease));
                                     wake.notify_all();
                                 }
                             }
@@ -354,36 +420,67 @@ impl Engine {
                 for worker in &ws.workers {
                     let (sched, wake, order) = (&sched, &wake, &order);
                     let (prebuild, judge_one, note_compiled) = (&prebuild, &judge_one, &note_compiled);
+                    let (make_room, note_pause) = (&make_room, &note_pause);
                     s.spawn(move || loop {
-                        let job = {
+                        let job = loop {
                             let mut q = sched.lock();
-                            loop {
-                                if cancel.load(Ordering::Relaxed) {
-                                    break None;
-                                }
-                                if let Some(i) = q.ready.pop_front() {
-                                    break Some((i, false));
-                                }
-                                // Nothing compiled is waiting: compile the next one here rather than idle.
-                                if q.next_build < n {
-                                    q.next_build += 1;
-                                    break Some((q.next_build - 1, true));
-                                }
-                                if q.building == 0 {
-                                    break None;
-                                }
-                                wake.wait_for(&mut q, std::time::Duration::from_millis(200));
+                            if cancel.load(Ordering::Relaxed) {
+                                break None;
                             }
+                            if let Some((i, lease)) = q.ready.pop_front() {
+                                q.judging += 1;
+                                break Some((i, lease, false));
+                            }
+                            // Nothing compiled is waiting: compile the next one here
+                            // rather than idle (if the cache has room).
+                            if q.next_build < n {
+                                let idle = q.building == 0 && q.judging == 0;
+                                drop(q);
+                                let room = make_room();
+                                let mut q = sched.lock();
+                                if room || idle {
+                                    if room {
+                                        note_pause(false);
+                                    }
+                                    if q.next_build < n {
+                                        q.next_build += 1;
+                                        q.judging += 1;
+                                        break Some((q.next_build - 1, None, true));
+                                    }
+                                    continue;
+                                }
+                                note_pause(true);
+                                wake.wait_for(&mut q, std::time::Duration::from_millis(500));
+                                continue;
+                            }
+                            if q.building == 0 {
+                                break None;
+                            }
+                            wake.wait_for(&mut q, std::time::Duration::from_millis(200));
                         };
-                        let Some((i, compile)) = job else { break };
+                        let Some((i, mut lease, compile)) = job else { break };
                         if compile {
-                            prebuild(worker, &order[i]);
+                            lease = prebuild(worker, &order[i]);
                             note_compiled();
                         }
                         judge_one(worker, &order[i]);
+                        // The program may now be evicted; paused compilers can retry.
+                        drop(lease);
+                        sched.lock().judging -= 1;
+                        wake.notify_all();
                     });
                 }
             });
+            // The last programs were compiled after the final check: trim.
+            if limit > 0 {
+                let used = crate::compile::cache_usage(&cache_dir).1;
+                if used > limit {
+                    crate::compile::evict(&cache_dir, used - limit);
+                }
+            }
+            if limit > 0 && std::env::var_os("OIJ_DEBUG").is_some() {
+                eprintln!("cache limit: {} ms spent making room", room_ns.load(Ordering::Relaxed) / 1_000_000);
+            }
             return Ok(());
         }
 
@@ -401,7 +498,7 @@ impl Engine {
                                 problem_tools(builder, helpers[i]);
                             } else {
                                 let Some(task) = order.get(i - helpers.len()) else { break };
-                                prebuild(builder, task);
+                                drop(prebuild(builder, task));
                             }
                             note_compiled();
                         }
@@ -438,6 +535,18 @@ struct Schedule {
     next_build: usize,
     /// Tasks being compiled by compile workers.
     building: usize,
-    /// Compiled tasks waiting for a judging worker.
-    ready: VecDeque<usize>,
+    /// Tasks being compiled or judged by judging workers.
+    judging: usize,
+    /// Compiled tasks waiting for a judging worker, with a lease that keeps
+    /// their program in the cache until judged.
+    ready: VecDeque<(usize, Option<crate::compile::Lease>)>,
+}
+
+/// Adds the time since `.1` to `.0` when dropped.
+struct TimeGuard<'a>(&'a AtomicU64, std::time::Instant);
+
+impl Drop for TimeGuard<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_add(self.1.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    }
 }

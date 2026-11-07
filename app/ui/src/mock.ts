@@ -49,7 +49,7 @@ const settings: AppSettings = {
     { lang: "cpp", path: "C:\\mingw64\\bin\\g++.exe", args: "-O2 -std=c++17 -static -DONLINE_JUDGE" },
     { lang: "c", path: "C:\\mingw64\\bin\\gcc.exe", args: "-O2 -std=c11 -static -DONLINE_JUDGE -lm" },
   ],
-  workers: 0, pin_cores: true, overlap_compile: true, patch_stack: true, output_limit_mb: 256, compile_time_ms: 20000, compile_memory_mb: 2048,
+  workers: 0, pin_cores: true, overlap_compile: true, cache_limit_mb: 10240, patch_stack: true, output_limit_mb: 256, compile_time_ms: 20000, compile_memory_mb: 2048,
   checker_time_ms: 10000, checker_memory_mb: 2048, language: "zh-CN", recent: ["D:\\contests\\noip-mock-3", "D:\\contests\\csp-s-2026"],
 };
 
@@ -75,7 +75,7 @@ function result(c: string, pname: string): ProblemResult | null {
 
 let open = false;
 async function simulate(total: number) {
-  const view: ProgressView = { running: true, compile_done: 0, compile_total: 0, total, done: 0, workers: [null, null, null, null], counts: {}, elapsed_ms: 0, updates: [], messages: [], log: [], error: null };
+  const view: ProgressView = { running: true, compile_done: 0, compile_total: total, total, done: 0, workers: [null, null, null, null], counts: {}, elapsed_ms: 0, updates: [], messages: [], log: [], error: null };
   const start = Date.now();
   for (let i = 0; i < total; i++) {
     await new Promise((r) => setTimeout(r, 60));
@@ -85,6 +85,9 @@ async function simulate(total: number) {
     const idx = cells.findIndex((x) => x.contestant === c && x.problem === p.name);
     if (idx >= 0) cells[idx] = cell; else cells.push(cell);
     view.done++;
+    // Compiling runs ahead of judging and pauses for a while (cache limit).
+    view.compile_done = Math.min(total, view.done + 3);
+    view.compile_paused = view.done > total * 0.3 && view.done < total * 0.5;
     view.counts[cell.label] = (view.counts[cell.label] ?? 0) + 1;
     view.workers = view.workers.map((_, k) => ({ contestant: names[(i + k) % names.length], problem: contest.problem[(i + k) % 4].name, cases_done: k * 3 }));
     view.elapsed_ms = Date.now() - start;
@@ -149,6 +152,8 @@ export function installMocks() {
         case "open_contest": case "reload_contest": open = true; return { root: "D:\\contests\\noip-mock-3", contest, contestants: names, cells };
         case "save_contest_config": Object.assign(contest, a.contest); return { root: "D:\\contests\\noip-mock-3", contest, contestants: names, cells };
         case "close_contest": open = false; return null;
+        case "cache_usage": return { files: 960, bytes: 119_000_000 };
+        case "clear_cache": return { files: 960, bytes: 119_000_000 };
         case "get_result": return result(a.contestant as string, a.problem as string);
         case "read_source": return [{ path: `D:\\contests\\noip-mock-3\\source\\${a.contestant}\\${a.problem}\\${a.problem}.cpp`, text: "#include <bits/stdc++.h>\nusing namespace std;\n\nint main() {\n    long long a, b;\n    cin >> a >> b;\n    cout << a + b << endl;\n}\n" }];
         case "list_data_files": return Array.from({ length: 10 }, (_, i) => [`${a.sub}${i + 1}.in`, `${a.sub}${i + 1}.out`]).flat();

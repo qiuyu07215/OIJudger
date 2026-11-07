@@ -55,6 +55,9 @@ pub enum Command {
         /// program as soon as it is compiled)
         #[arg(long)]
         two_phase: bool,
+        /// Compile cache limit in MB (0 = unlimited; default from settings, 10240)
+        #[arg(long, value_name = "MB")]
+        cache_limit: Option<u64>,
         /// Print every finished task
         #[arg(short, long)]
         verbose: bool,
@@ -97,6 +100,10 @@ pub enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// Delete the compile cache of a contest (results are kept)
+    Clean {
+        dir: PathBuf,
+    },
     /// List detected compilers
     Compilers,
     /// Verify sandbox isolation and limits on this machine
@@ -136,7 +143,7 @@ pub fn run(cli: Cli) -> Result<i32> {
             println!("Contestants: {}", judge_core::discover::list_contestants(&cd).len());
             Ok(0)
         }
-        Command::Judge { dir, problems, contestants, all, jobs, no_pin, two_phase, verbose } => {
+        Command::Judge { dir, problems, contestants, all, jobs, no_pin, two_phase, cache_limit, verbose } => {
             let mut settings = settings;
             if let Some(j) = jobs {
                 settings.workers = j;
@@ -146,6 +153,9 @@ pub fn run(cli: Cli) -> Result<i32> {
             }
             if two_phase {
                 settings.overlap_compile = false;
+            }
+            if let Some(mb) = cache_limit {
+                settings.cache_limit_mb = mb;
             }
             let project = Project::open(&dir)?;
             let sel = Selection { problems, contestants, only_stale: !all };
@@ -231,6 +241,12 @@ pub fn run(cli: Cli) -> Result<i32> {
             for w in im.warnings {
                 println!("  warning: {w}");
             }
+            Ok(0)
+        }
+        Command::Clean { dir } => {
+            let cache = judge_core::ContestDir::new(&dir).build_cache();
+            let (n, bytes) = judge_core::compile::clear_cache(&cache)?;
+            println!("Removed {n} file(s), freed {:.1} MB. Results are kept.", bytes as f64 / 1e6);
             Ok(0)
         }
         Command::Compilers => {

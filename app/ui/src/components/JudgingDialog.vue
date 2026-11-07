@@ -60,6 +60,7 @@ function verdictText(v: string) {
           <span class="tabular nums">
             {{ compiling ? t("judging.compiling", { done: p.compile_done, total: p.compile_total }) : t("progress.done", { done: p.done, total: p.total }) }}
             <template v-if="alsoCompiling"> · {{ t("judging.compiledShort", { done: p.compile_done, total: p.compile_total }) }}</template>
+            <span v-if="judging && p.compile_paused" class="paused" :title="t('judging.pausedHint')"> · {{ t("judging.paused") }}</span>
           </span>
         </div>
         <div class="sub">
@@ -195,5 +196,8 @@ function verdictText(v: string) {
   border-top: 1px dashed var(--divider);
   margin: 2px 0 4px;
   padding-top: 2px;
+}
+.paused {
+  color: var(--accent);
 }
 </style>

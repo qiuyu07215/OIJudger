@@ -102,10 +102,41 @@ const menus = computed<{ key: string; label: string; options: DropdownOption[] }
       { label: t("menu.settings"), key: "settings", icon: icon(Settings) },
       { label: t("menu.selftest"), key: "selftest" },
       { label: t("menu.plagiarism"), key: "plagiarism", disabled: !hasContest.value },
+      { type: "divider", key: "d3" },
+      { label: t("menu.clearCache"), key: "clearCache", disabled: !hasContest.value || judging.value },
     ],
   },
   { key: "help", label: t("menu.help"), options: [{ label: t("menu.about"), key: "about" }] },
 ]);
+
+const fmtMB = (b: number) => (b / 1e6).toFixed(b < 1e7 ? 1 : 0);
+async function clearCache() {
+  let usage: { files: number; bytes: number };
+  try {
+    usage = await api.cacheUsage();
+  } catch (e) {
+    message.error(String(e));
+    return;
+  }
+  if (!usage.files) {
+    message.info(t("cache.empty"));
+    return;
+  }
+  dialog.warning({
+    title: t("cache.title"),
+    content: t("cache.confirm", { mb: fmtMB(usage.bytes), n: usage.files }),
+    positiveText: t("common.delete"),
+    negativeText: t("common.cancel"),
+    onPositiveClick: async () => {
+      try {
+        const r = await api.clearCache();
+        message.success(t("cache.done", { mb: fmtMB(r.bytes) }));
+      } catch (e) {
+        message.error(String(e), { duration: 8000 });
+      }
+    },
+  });
+}
 
 async function onMenu(key: string) {
   if (key.startsWith("recent:")) return open(key.slice(7));
@@ -125,6 +156,7 @@ async function onMenu(key: string) {
     case "showJudging": state.showJudging = true; return;
     case "settings": case "selftest": showSettings.value = true; return;
     case "plagiarism": tab.value = "plagiarism"; return;
+    case "clearCache": return clearCache();
     case "about":
       dialog.info({ title: t("menu.about"), content: t("menu.aboutText", { v: state.info?.version ?? "" }), positiveText: t("common.ok") });
       return;
@@ -251,7 +283,8 @@ watch(
                 ? t("statusbar.judging", { done: state.progress.done, total: state.progress.total }) +
                   (state.progress.compile_done < state.progress.compile_total
                     ? " · " + t("judging.compiledShort", { done: state.progress.compile_done, total: state.progress.compile_total })
-                    : "")
+                    : "") +
+                  (state.progress.compile_paused ? " · " + t("judging.paused") : "")
                 : t("progress.finished")
           }}</span>
           <n-progress type="line" :percentage="pct" :show-indicator="false" :height="6" :processing="judging" color="#D97757" style="width: 140px" />

@@ -33,11 +33,12 @@
 `oijudger-cli.exe`（`OIJudger.exe` 带参数运行时也是命令行模式）：
 
 ```
-oijudger-cli judge <比赛目录> [-p 试题]... [-c 选手]... [--all] [-j 线程数] [--two-phase]
+oijudger-cli judge <比赛目录> [-p 试题]... [-c 选手]... [--all] [-j 线程数] [--two-phase] [--cache-limit MB]
 oijudger-cli results <比赛目录> [--contestant 选手]
 oijudger-cli stats <比赛目录>
 oijudger-cli export <比赛目录> -f html|htm|xlsx|csv [-o 文件]
 oijudger-cli similarity <比赛目录> [-p 试题] [-t 阈值%]
+oijudger-cli clean <比赛目录>              # 删除编译缓存，评测结果保留
 oijudger-cli init <比赛目录>
 oijudger-cli import-lemon <比赛.cdf>
 oijudger-cli compilers
@@ -71,6 +72,14 @@ cases = [{ input = "sum/2.in", output = "sum/2.out" }, { input = "sum/3.in", out
 ```
 
 交互题：`kind = "interactive"`，并配置 `grader = { header_path, header_name, grader_path }`（NOI 风格）或 `interactor = "guess/interactor.cpp"`（testlib 交互器）。提交答案题：`kind = "answer"`，`answer_ext = "out"`。通信题：`kind = "communication"`，`communication = { sources = [...], interfaces = [...] }`；加上 `multi_program = true` 则每个源文件编译为独立程序，`interfaces` 中的 `grader.cpp` 单独编译运行并负责启动选手程序（与 LemonLime 的多程序通信题相同；grader 与选手程序在同一个沙箱内，进程数上限为程序数 + 1）。
+
+## 编译缓存占用空间
+
+编译好的程序缓存在比赛目录的 `.oij/build/` 中，这样重新评测时不必再次编译。为了与正式评测环境一致，程序是静态链接的；OIJudger 已去掉其中的调试符号，每个程序约 0.25～1 MB，2 万份代码约需 5～20 GB。
+
+评测时，缓存有大小上限（默认 10 GB，在“设置”中修改，0 表示不限；命令行用 `--cache-limit <MB>`）。超过上限时编译会暂停，已评测完的程序会先从缓存中删除，腾出空间后自动继续；等待评测或正在运行的程序不会被删除。上限只在“编译与评测同时进行”时生效。被删掉的程序以后如需重新评测，会重新编译。
+
+比赛评完、不再需要重新评测时，用“工具 → 清理编译缓存”（或 `oijudger-cli clean <比赛目录>`）删除缓存。评测结果会保留，之后如需重新评测，程序会重新编译。
 
 ## 打不开 / 一打开就退出？
 

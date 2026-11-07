@@ -25,6 +25,7 @@ export interface AppSettings {
   workers: number;
   pin_cores: boolean;
   overlap_compile: boolean;
+  cache_limit_mb: number;
   patch_stack: boolean;
   output_limit_mb: number;
   compile_time_ms: number;
@@ -141,6 +142,7 @@ export interface ProgressView {
   running: boolean;
   compile_done: number;
   compile_total: number;
+  compile_paused?: boolean;
   total: number;
   done: number;
   workers: (WorkerView | null)[];
@@ -206,6 +208,8 @@ export const api = {
   openContest: (path: string) => invoke<ContestView>("open_contest", { path }),
   reloadContest: () => invoke<ContestView>("reload_contest"),
   closeContest: () => invoke<void>("close_contest"),
+  cacheUsage: () => invoke<{ files: number; bytes: number }>("cache_usage"),
+  clearCache: () => invoke<{ files: number; bytes: number }>("clear_cache"),
   saveContestConfig: (contest: Contest) => invoke<ContestView>("save_contest_config", { contest }),
   detectProblems: (timeMs: number, memoryMb: number) =>
     invoke<Problem[]>("detect_problems", { timeMs, memoryMb }),

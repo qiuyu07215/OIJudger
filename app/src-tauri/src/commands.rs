@@ -464,3 +464,34 @@ pub async fn similarity(
     let project = state.project()?;
     blocking(move || Ok(project.similarity(&problem, threshold))).await
 }
+
+#[derive(Serialize)]
+pub struct CacheUsage {
+    files: usize,
+    bytes: u64,
+}
+
+/// Size of the open contest's compile cache.
+#[tauri::command]
+pub async fn cache_usage(state: State<'_, AppState>) -> CmdResult<CacheUsage> {
+    let project = state.project()?;
+    blocking(move || {
+        let (files, bytes) = judge_core::compile::cache_usage(&project.dir.build_cache());
+        Ok(CacheUsage { files, bytes })
+    })
+    .await
+}
+
+/// Delete the open contest's compile cache (results are kept).
+#[tauri::command]
+pub async fn clear_cache(state: State<'_, AppState>) -> CmdResult<CacheUsage> {
+    if state.is_judging() {
+        return Err("Judging is in progress".into());
+    }
+    let project = state.project()?;
+    blocking(move || {
+        let (files, bytes) = judge_core::compile::clear_cache(&project.dir.build_cache()).map_err(err)?;
+        Ok(CacheUsage { files, bytes })
+    })
+    .await
+}

@@ -234,8 +234,104 @@ pub struct BuildRequest {
 
 #[derive(Debug, Clone)]
 pub enum BuildOutput {
-    Ok { exe: PathBuf, log: String },
+    /// `lease` keeps `exe` from being evicted from the cache while it is in
+    /// use; `fresh` is true when it was compiled now (not a cache hit).
+    Ok { exe: PathBuf, log: String, lease: Lease, fresh: bool },
     Failed { log: String },
+}
+
+/// Cached programs in use. Eviction ([`evict`]) never deletes a leased file;
+/// checking a cache entry and leasing it happen under the same lock.
+#[derive(Default)]
+struct LeaseTable {
+    count: std::collections::HashMap<PathBuf, usize>,
+    /// Programs whose last lease ended, oldest first: they were judged in
+    /// this run and are the cheapest to evict.
+    released: Vec<PathBuf>,
+}
+
+static LEASES: std::sync::LazyLock<parking_lot::Mutex<LeaseTable>> = std::sync::LazyLock::new(Default::default);
+
+/// Keeps a cached program from being evicted while it is alive.
+#[derive(Debug)]
+pub struct Lease {
+    path: PathBuf,
+}
+
+impl Lease {
+    fn acquire(t: &mut LeaseTable, path: &Path) -> Lease {
+        *t.count.entry(path.to_path_buf()).or_default() += 1;
+        Lease { path: path.to_path_buf() }
+    }
+    /// Never release (checkers / interactors used for the whole session).
+    pub fn keep_forever(self) {
+        std::mem::forget(self);
+    }
+}
+
+impl Clone for Lease {
+    fn clone(&self) -> Lease {
+        Lease::acquire(&mut LEASES.lock(), &self.path)
+    }
+}
+
+impl Drop for Lease {
+    fn drop(&mut self) {
+        let mut t = LEASES.lock();
+        if let Some(c) = t.count.get_mut(&self.path) {
+            *c -= 1;
+            if *c == 0 {
+                t.count.remove(&self.path);
+                t.released.push(self.path.clone());
+            }
+        }
+    }
+}
+
+/// Forget which programs were released (start of a judging session).
+pub fn reset_released() {
+    LEASES.lock().released.clear();
+}
+
+/// Delete unleased programs (and their compile logs) from the cache until
+/// at least `need` bytes are freed: programs judged in this session first,
+/// then the least recently modified. Returns the bytes freed. Files that
+/// cannot be deleted right now are skipped.
+pub fn evict(cache_dir: &Path, need: u64) -> u64 {
+    let mut t = LEASES.lock();
+    let mut order: Vec<PathBuf> = std::mem::take(&mut t.released);
+    let mut rest: Vec<(std::time::SystemTime, PathBuf)> = std::fs::read_dir(cache_dir)
+        .map(|rd| {
+            rd.flatten()
+                .map(|e| e.path())
+                .filter(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("exe")))
+                .filter_map(|p| Some((std::fs::metadata(&p).ok()?.modified().ok()?, p)))
+                .collect()
+        })
+        .unwrap_or_default();
+    rest.sort();
+    order.extend(rest.into_iter().map(|(_, p)| p));
+    let mut seen = std::collections::HashSet::new();
+    let mut freed = 0u64;
+    for p in order {
+        if freed >= need {
+            break;
+        }
+        if !seen.insert(p.clone()) || t.count.contains_key(&p) {
+            continue;
+        }
+        let Ok(m) = std::fs::metadata(&p) else { continue };
+        if std::fs::remove_file(&p).is_ok() {
+            freed += m.len();
+            let log = p.with_extension("log");
+            if let Ok(lm) = std::fs::metadata(&log) {
+                if std::fs::remove_file(&log).is_ok() {
+                    freed += lm.len();
+                }
+            }
+        }
+    }
+    freed
 }
 
 impl BuildRequest {
@@ -248,6 +344,7 @@ impl BuildRequest {
         h.update(self.compiler.args.as_bytes());
         h.update(b"\0");
         h.update(self.extra_args.as_bytes());
+        h.update(b"\0strip");
         for (path, name, main) in &self.files {
             h.update(b"\0file\0");
             h.update(name.as_bytes());
@@ -335,8 +432,12 @@ pub fn build(
     // Several workers (the compile pipeline and the judging workers) may
     // ask for the same build; only one compiles, the others wait for it.
     let _claim = loop {
-        if cached_exe.is_file() {
-            return Ok(BuildOutput::Ok { exe: cached_exe, log: read_log(&cached_log) });
+        let hit = {
+            let mut t = LEASES.lock();
+            cached_exe.is_file().then(|| Lease::acquire(&mut t, &cached_exe))
+        };
+        if let Some(lease) = hit {
+            return Ok(BuildOutput::Ok { exe: cached_exe, log: read_log(&cached_log), lease, fresh: false });
         }
         if cached_fail.is_file() {
             return Ok(BuildOutput::Failed { log: read_log(&cached_fail) });
@@ -357,6 +458,9 @@ pub fn build(
     }
     args.extend(split_args(&req.compiler.args));
     args.extend(split_args(&req.extra_args));
+    // Drop symbol tables: cached programs get ~60% smaller (a statically
+    // linked program is 0.5-2.5 MB otherwise); running them is unaffected.
+    args.push("-s".into());
     args.push("-o".into());
     args.push("__oij_out.exe".into());
     for (src, name, main) in &req.files {
@@ -425,13 +529,17 @@ pub fn build(
             // Different volume.
             retry_io(|| std::fs::copy(&out_exe, &tmp)).context("storing compiled program")?;
         }
-        retry_io(|| std::fs::rename(&tmp, &cached_exe))
-            .or_else(|e| if cached_exe.is_file() { Ok(()) } else { Err(e) })
-            .context("storing compiled program")?;
+        let lease = {
+            let mut t = LEASES.lock();
+            retry_io(|| std::fs::rename(&tmp, &cached_exe))
+                .or_else(|e| if cached_exe.is_file() { Ok(()) } else { Err(e) })
+                .context("storing compiled program")?;
+            Lease::acquire(&mut t, &cached_exe)
+        };
         if std::env::var_os("OIJ_DEBUG").is_some() {
             eprintln!("[w{}] stored {:?} total {} ms", worker.index(), req.files[0].1, t_enter.elapsed().as_millis());
         }
-        Ok(BuildOutput::Ok { exe: cached_exe, log: text })
+        Ok(BuildOutput::Ok { exe: cached_exe, log: text, lease, fresh: true })
     } else {
         match r.outcome {
             sandbox::Outcome::TimeLimit | sandbox::Outcome::IdleLimit => {
@@ -447,6 +555,49 @@ pub fn build(
         std::fs::write(&cached_fail, &text)?;
         Ok(BuildOutput::Failed { log: text })
     }
+}
+
+/// Number of files and bytes in a contest's compile cache.
+pub fn cache_usage(cache_dir: &Path) -> (usize, u64) {
+    let Ok(rd) = std::fs::read_dir(cache_dir) else { return (0, 0) };
+    rd.flatten()
+        .filter_map(|e| e.metadata().ok().filter(|m| m.is_file()))
+        .fold((0, 0), |(n, b), m| (n + 1, b + m.len()))
+}
+
+/// Delete a contest's compile cache. Results are kept; programs are compiled
+/// again when they are next judged. Returns the files and bytes removed.
+pub fn clear_cache(cache_dir: &Path) -> Result<(usize, u64)> {
+    let Ok(rd) = std::fs::read_dir(cache_dir) else { return Ok((0, 0)) };
+    let (mut n, mut bytes) = (0usize, 0u64);
+    let mut failed = Vec::new();
+    for e in rd.flatten() {
+        let Ok(m) = e.metadata() else { continue };
+        if !m.is_file() {
+            continue;
+        }
+        // Right after judging, antivirus software or a program that is still
+        // shutting down can hold an executable for a few seconds.
+        let mut r = retry_io(|| std::fs::remove_file(e.path()));
+        for _ in 0..6 {
+            if r.is_ok() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(700));
+            r = retry_io(|| std::fs::remove_file(e.path()));
+        }
+        match r {
+            Ok(()) => {
+                n += 1;
+                bytes += m.len();
+            }
+            Err(err) => failed.push(format!("{}: {err}", e.path().display())),
+        }
+    }
+    if !failed.is_empty() {
+        anyhow::bail!("removed {n} file(s), but {} could not be deleted:\n{}", failed.len(), failed.join("\n"));
+    }
+    Ok((n, bytes))
 }
 
 #[cfg(test)]

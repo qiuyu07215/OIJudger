@@ -26,6 +26,10 @@ pub struct Settings {
     /// everything first. Compilers then run on the cores not used for
     /// timing (and on idle judging workers).
     pub overlap_compile: bool,
+    /// Compile cache size limit in MB (0 = unlimited). When the cache grows
+    /// past it while compiling and judging overlap, compiling pauses until
+    /// programs that were already judged have been removed from the cache.
+    pub cache_limit_mb: u64,
     /// Raise the stack reserve of contestant programs to the memory limit.
     pub patch_stack: bool,
     pub output_limit_mb: u64,
@@ -33,12 +37,16 @@ pub struct Settings {
     pub checker: CheckerLimits,
 }
 
+/// Default compile cache limit: 10 GB.
+pub const DEFAULT_CACHE_LIMIT_MB: u64 = 10 * 1024;
+
 impl Default for Settings {
     fn default() -> Self {
         Settings {
             workers: 0,
             pin_cores: true,
             overlap_compile: true,
+            cache_limit_mb: DEFAULT_CACHE_LIMIT_MB,
             patch_stack: true,
             output_limit_mb: 256,
             build: BuildLimits::default(),
@@ -191,6 +199,8 @@ fn judge_inner(
     }
 
     let mut compile_log = String::new();
+    // Dropped in reverse order: the grant is revoked before the lease ends.
+    let mut _exe_lease: Option<crate::compile::Lease> = None; // keeps the program in the cache
     let mut _exe_grant: Option<ExeGrant> = None; // held until judging ends
     let runner = if problem.kind == ProblemKind::Answer {
         let any = problem
@@ -223,8 +233,9 @@ fn judge_inner(
         let (_, version) = ctx.tools.get(req.compiler.lang).expect("checked in build_request");
         match build(worker, &req, version, &ctx.dir.build_cache(), &ctx.settings.build)? {
             BuildOutput::Failed { log } => return empty(Status::CompileError, log),
-            BuildOutput::Ok { exe, log } => {
+            BuildOutput::Ok { exe, log, lease, .. } => {
                 compile_log = log;
+                _exe_lease = Some(lease);
                 worker.fresh_run_dir()?;
                 // Run the cached program where it is: copying it would make
                 // antivirus software scan it again before the first run.
@@ -289,14 +300,26 @@ fn judge_inner(
 /// `Ok(None)`: no source. `Ok(Some(Err))`: configuration problem.
 /// Compile ahead of judging (the compile pipeline); results land in the
 /// build cache, errors are reported later by the judging worker.
-pub(crate) fn prebuild(ctx: &JudgeContext, worker: &Worker, contestant: &str, problem: &Problem) {
+/// Compile a task's program ahead of judging. Returns a lease on the
+/// cached program (keep it until the task is judged) and the number of bytes
+/// added to the cache.
+pub(crate) fn prebuild(
+    ctx: &JudgeContext,
+    worker: &Worker,
+    contestant: &str,
+    problem: &Problem,
+) -> Option<(crate::compile::Lease, u64)> {
     if problem.kind == ProblemKind::Answer || is_multi_program(problem) || ctx.cancel.load(Ordering::Relaxed) {
-        return;
+        return None;
     }
-    if let Ok(Some(Ok(req))) = build_request(ctx, contestant, problem) {
-        if let Some((_, version)) = ctx.tools.get(req.compiler.lang) {
-            let _ = build(worker, &req, version, &ctx.dir.build_cache(), &ctx.settings.build);
+    let Ok(Some(Ok(req))) = build_request(ctx, contestant, problem) else { return None };
+    let (_, version) = ctx.tools.get(req.compiler.lang)?;
+    match build(worker, &req, version, &ctx.dir.build_cache(), &ctx.settings.build) {
+        Ok(BuildOutput::Ok { exe, lease, fresh, .. }) => {
+            let added = if fresh { std::fs::metadata(&exe).map(|m| m.len()).unwrap_or(0) } else { 0 };
+            Some((lease, added))
         }
+        _ => None,
     }
 }
 
@@ -657,7 +680,7 @@ fn prepare_multi(ctx: &JudgeContext, worker: &Worker, contestant: &str, problem:
         return Ok(Prepared::Config("Communication problem has no source files configured".into()));
     }
 
-    let compile = |main: &Path| -> Result<std::result::Result<(PathBuf, String), String>> {
+    let compile = |main: &Path| -> Result<std::result::Result<(PathBuf, String, crate::compile::Lease), String>> {
         let lang = Lang::from_path(main).unwrap_or(Lang::Cpp);
         let Some((compiler, version)) = ctx.tools.get(lang) else {
             return Ok(Err(format!("No compiler configured for {lang:?}")));
@@ -666,36 +689,37 @@ fn prepare_multi(ctx: &JudgeContext, worker: &Worker, contestant: &str, problem:
         files.extend(headers.iter().cloned());
         let req = BuildRequest { files, compiler: compiler.clone(), extra_args: problem.compile_args.clone() };
         Ok(match build(worker, &req, version, &ctx.dir.build_cache(), &ctx.settings.build)? {
-            BuildOutput::Ok { exe, log } => Ok((exe, log)),
+            BuildOutput::Ok { exe, log, lease, .. } => Ok((exe, log, lease)),
             BuildOutput::Failed { log } => Err(log),
         })
     };
 
-    let mut programs: Vec<(PathBuf, String)> = Vec::new();
+    // Leases are held until the programs are copied into the run directory.
+    let mut programs: Vec<(PathBuf, String, crate::compile::Lease)> = Vec::new();
     let mut logs = String::new();
     for n in &comm.sources {
         let Some(src) = find_source(ctx.dir, contestant, problem, n) else {
             return Ok(Prepared::Missing(format!("{n} not found")));
         };
         match compile(&src)? {
-            Ok((exe, log)) => {
+            Ok((exe, log, lease)) => {
                 if !log.trim().is_empty() {
                     logs.push_str(&format!("[{}]\n{}\n", file_name(&src), log.trim()));
                 }
-                programs.push((exe, format!("{}.exe", stem(&src))));
+                programs.push((exe, format!("{}.exe", stem(&src)), lease));
             }
             Err(log) => return Ok(Prepared::CompileError(format!("[{}]\n{log}", file_name(&src)))),
         }
     }
-    let grader_exe = match compile(&grader)? {
-        Ok((exe, _)) => exe,
+    let (grader_exe, grader_lease) = match compile(&grader)? {
+        Ok((exe, _, lease)) => (exe, lease),
         Err(log) => return Ok(Prepared::Config(format!("Grader failed to compile:\n{log}"))),
     };
-    programs.push((grader_exe, "grader.exe".into()));
+    programs.push((grader_exe, "grader.exe".into(), grader_lease));
 
     let run_dir = worker.fresh_run_dir()?;
     let mut keep = Vec::new();
-    for (exe, name) in &programs {
+    for (exe, name, _) in &programs {
         let dst = run_dir.join(name);
         retry_io(|| std::fs::copy(exe, &dst)).with_context(|| format!("copying {}", exe.display()))?;
         if ctx.settings.patch_stack {
