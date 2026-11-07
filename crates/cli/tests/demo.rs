@@ -22,7 +22,7 @@ fn demo_contest_scores() {
     settings.workers = 4;
     let cancel = AtomicBool::new(false);
     let n = project.judge(&settings, &Selection::default(), &|_| {}, &cancel).unwrap();
-    assert_eq!(n, 30);
+    assert_eq!(n, 35);
 
     let expected: HashMap<String, HashMap<String, f64>> =
         serde_json::from_str(&std::fs::read_to_string(root.join("expected.json")).unwrap()).unwrap();

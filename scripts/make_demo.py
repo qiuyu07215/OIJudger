@@ -1,7 +1,7 @@
 """Generate examples/demo-contest: every problem type and most verdicts.
 
 Expected scores are written to expected.json:
-alice 600, bob 310, eve 100, carol 0, dave 0.
+alice 700, bob 310, eve 100, carol 0, dave 0.
 """
 import json
 import os
@@ -67,6 +67,39 @@ for i, (q, a) in enumerate([("3", "9"), ("12", "144")], 1):
 for i, (a, b) in enumerate([(1, 2), (-1000000000000, 5)], 1):
     w(f"data/add/add{i}.in", f"{a} {b}\n")
     w(f"data/add/add{i}.out", f"{a + b}\n")
+for i, n in enumerate([5, -123456789012], 1):
+    w(f"data/relay/relay{i}.in", f"{n}\n")
+    w(f"data/relay/relay{i}.out", f"{n}\n")
+w("data/relay/grader.cpp", r'''// Starts the contestant's encoder.exe and decoder.exe and relays data.
+#include <windows.h>
+#include <cstdio>
+static int run(const char* exe, const char* in, const char* out) {
+    SECURITY_ATTRIBUTES sa{sizeof sa, nullptr, TRUE};
+    HANDLE hi = CreateFileA(in, GENERIC_READ, FILE_SHARE_READ, &sa, OPEN_EXISTING, 0, nullptr);
+    HANDLE ho = CreateFileA(out, GENERIC_WRITE, 0, &sa, CREATE_ALWAYS, 0, nullptr);
+    if (hi == INVALID_HANDLE_VALUE || ho == INVALID_HANDLE_VALUE) return -1;
+    STARTUPINFOA si{}; si.cb = sizeof si; si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdInput = hi; si.hStdOutput = ho; si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+    PROCESS_INFORMATION pi{};
+    char cmd[64]; snprintf(cmd, sizeof cmd, "%s", exe);
+    if (!CreateProcessA(exe, cmd, nullptr, nullptr, TRUE, 0, nullptr, nullptr, &si, &pi)) {
+        CloseHandle(hi); CloseHandle(ho); return -2;
+    }
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD code = 1; GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hProcess); CloseHandle(pi.hThread); CloseHandle(hi); CloseHandle(ho);
+    return (int)code;
+}
+int main() {
+    long long n; if (scanf("%lld", &n) != 1) return 1;
+    FILE* f = fopen("enc.in", "w"); fprintf(f, "%lld\n", n); fclose(f);
+    if (run("encoder.exe", "enc.in", "enc.out") != 0) { printf("encoder failed\n"); return 0; }
+    if (run("decoder.exe", "enc.out", "dec.out") != 0) { printf("decoder failed\n"); return 0; }
+    long long m = 0; f = fopen("dec.out", "r");
+    if (!f || fscanf(f, "%lld", &m) != 1) { printf("bad decoder output\n"); return 0; }
+    fclose(f); printf("%lld\n", m);
+}
+''')
 w("data/add/add.h", "long long add(long long a, long long b);\n")
 w("data/add/grader.cpp", r'''#include <cstdio>
 #include "add.h"
@@ -104,6 +137,9 @@ w("contest.toml", "\n\n".join([
     '[[problem]]\nname = "add"\ntitle = "Add (NOI-style grader)"\nkind = "interactive"\nstdio = true\n'
     'grader = { header_path = "add/add.h", header_name = "add.h", grader_path = "add/grader.cpp" }',
     subtasks("add", [[("add1.in", "add1.out")], [("add2.in", "add2.out")]], [50, 50]),
+    '[[problem]]\nname = "relay"\ntitle = "Relay (multi-program communication)"\nkind = "communication"\nstdio = true\n'
+    'communication = { sources = ["encoder", "decoder"], interfaces = ["relay/grader.cpp"], multi_program = true }',
+    subtasks("relay", [[("relay1.in", "relay1.out")], [("relay2.in", "relay2.out")]], [50, 50]),
 ]) + "\n")
 
 # ---------------- sources ----------------
@@ -142,6 +178,9 @@ w("source/alice/guess/guess.cpp", GUESS_OK)
 w("source/alice/ans/ans1.out", "9\n")
 w("source/alice/ans/ans2.out", "144\n")
 w("source/alice/add/add.cpp", ADD_OK)
+ENCODER = '#include <cstdio>\nint main() { long long x; scanf("%lld", &x); printf("%lld\\n", 2 * x + 7); }\n'
+w("source/alice/relay/encoder.cpp", ENCODER)
+w("source/alice/relay/decoder.cpp", '#include <cstdio>\nint main() { long long y; scanf("%lld", &y); printf("%lld\\n", (y - 7) / 2); }\n')
 
 # bob: flat layout, partial results
 w("source/bob/sum.cpp", r'''#include <cstdio>
@@ -165,6 +204,8 @@ int main() {
 ''')
 w("source/bob/ans1.out", "9\n")
 w("source/bob/add.cpp", ADD_OK)
+w("source/bob/encoder.cpp", ENCODER)
+w("source/bob/decoder.cpp", '#include <cstdio>\nint main() { long long y; scanf("%lld", &y); printf("%lld\\n", y); }\n')
 
 # carol: compile errors and resource failures
 w("source/carol/sum.cpp", "int main() { this is not c++ }\n")
@@ -206,10 +247,10 @@ int main() {
 ''')
 
 w("expected.json", json.dumps({
-    "alice": {"sum": 100, "fio": 100, "real": 100, "guess": 100, "ans": 100, "add": 100},
-    "bob": {"sum": 60, "fio": 0, "real": 50, "guess": 50, "ans": 50, "add": 100},
-    "carol": {"sum": 0, "fio": 0, "real": 0, "guess": 0, "ans": 0, "add": 0},
-    "dave": {"sum": 0, "fio": 0, "real": 0, "guess": 0, "ans": 0, "add": 0},
-    "eve": {"sum": 100, "fio": 0, "real": 0, "guess": 0, "ans": 0, "add": 0},
+    "alice": {"sum": 100, "fio": 100, "real": 100, "guess": 100, "ans": 100, "add": 100, "relay": 100},
+    "bob": {"sum": 60, "fio": 0, "real": 50, "guess": 50, "ans": 50, "add": 100, "relay": 0},
+    "carol": {"sum": 0, "fio": 0, "real": 0, "guess": 0, "ans": 0, "add": 0, "relay": 0},
+    "dave": {"sum": 0, "fio": 0, "real": 0, "guess": 0, "ans": 0, "add": 0, "relay": 0},
+    "eve": {"sum": 100, "fio": 0, "real": 0, "guess": 0, "ans": 0, "add": 0, "relay": 0},
 }, indent=2) + "\n")
 print("demo contest written to", os.path.normpath(ROOT))

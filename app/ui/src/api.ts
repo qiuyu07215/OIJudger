@@ -62,7 +62,7 @@ export interface Problem {
   answer_ext?: string;
   grader?: { header_path: string; header_name: string; grader_path: string } | null;
   interactor?: string | null;
-  communication?: { sources: string[]; interfaces: string[] } | null;
+  communication?: { sources: string[]; interfaces: string[]; multi_program?: boolean } | null;
   compile_args?: string;
   subtask: Subtask[];
 }

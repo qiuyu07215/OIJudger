@@ -28,6 +28,14 @@ if os.path.exists(stage):
 os.makedirs(stage)
 for exe in ["OIJudger.exe", "oijudger-cli.exe"]:
     shutil.copy2(os.path.join(target, "release", exe), stage)
+# GNU builds load WebView2Loader.dll dynamically (MSVC builds link it in).
+loader = os.path.join(target, "release", "WebView2Loader.dll")
+with open(os.path.join(target, "release", "OIJudger.exe"), "rb") as f:
+    needs_loader = b"WebView2Loader.dll" in f.read()
+if needs_loader:
+    if not os.path.isfile(loader):
+        sys.exit("OIJudger.exe needs WebView2Loader.dll but it is not in the target directory")
+    shutil.copy2(loader, stage)
 shutil.copy2(os.path.join(ROOT, "README.md"), stage)
 os.makedirs(os.path.join(stage, "licenses"), exist_ok=True)
 shutil.copy2(os.path.join(ROOT, "assets", "testlib", "LICENSE"), os.path.join(stage, "licenses", "testlib-LICENSE.txt"))

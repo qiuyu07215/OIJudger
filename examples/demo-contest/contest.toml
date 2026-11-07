@@ -112,3 +112,22 @@ score = 50
 time_ms = 1000
 memory_mb = 256
 cases = [{ input = "add/add2.in", output = "add/add2.out" }]
+
+[[problem]]
+name = "relay"
+title = "Relay (multi-program communication)"
+kind = "communication"
+stdio = true
+communication = { sources = ["encoder", "decoder"], interfaces = ["relay/grader.cpp"], multi_program = true }
+
+[[problem.subtask]]
+score = 50
+time_ms = 1000
+memory_mb = 256
+cases = [{ input = "relay/relay1.in", output = "relay/relay1.out" }]
+
+[[problem.subtask]]
+score = 50
+time_ms = 1000
+memory_mb = 256
+cases = [{ input = "relay/relay2.in", output = "relay/relay2.out" }]

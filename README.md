@@ -5,7 +5,7 @@
 - **沙箱隔离**：选手程序运行在无任何能力的 AppContainer 中——内核层面断网（含本机回环与 DNS），只能读写自己的临时目录，不能读取标准答案、其他选手文件或用户文件，不能创建子进程、读剪贴板；编译过程同样在沙箱内（`#include` 外部文件会失败）。无需管理员权限。
 - **资源限制**：内存由 Job Object 在内核强制；按 CPU 时间判超时，墙钟兜底防止 `sleep`/阻塞；输出大小限制；栈空间自动设为内存限制（Windows 默认 2 MB 栈会让深递归爆栈）。
 - **高效**：多线程并行评测（默认绑定到性能核，计时稳定）；编译流水线 + 预编译 `bits/stdc++.h`；编译结果缓存；增量评测（只评测源程序、数据或设置发生变化的部分）。
-- **题型**：传统题（文件 / 标准 IO）、提交答案题、交互题（NOI 风格 grader，或 testlib 交互器双进程）、通信题（多源文件合编）。
+- **题型**：传统题（文件 / 标准 IO）、提交答案题、交互题（NOI 风格 grader，或 testlib 交互器双进程）、通信题（多源文件合编，或多程序：由 grader 启动各选手程序）。
 - **判分**：多种比较方式、testlib 校验器、Lemon 6 参数校验器、测试点内多组数据取最低分、子任务依赖。
 - **分析**：分数分布（含前缀和/后缀和）、平均分、中位数、标准差、区分度、测试点通过率、试题相关性、按 `contestants.csv` 分组对比；代码查重（忽略变量名、注释与格式）。
 - **导出**：HTML（含/不含详细结果）、Excel、CSV。
@@ -70,7 +70,7 @@ depends = [1]           # 依赖的测试点；依赖得 0 分则跳过
 cases = [{ input = "sum/2.in", output = "sum/2.out" }, { input = "sum/3.in", output = "sum/3.out" }]
 ```
 
-交互题：`kind = "interactive"`，并配置 `grader = { header_path, header_name, grader_path }`（NOI 风格）或 `interactor = "guess/interactor.cpp"`（testlib 交互器）。提交答案题：`kind = "answer"`，`answer_ext = "out"`。通信题：`kind = "communication"`，`communication = { sources = [...], interfaces = [...] }`。
+交互题：`kind = "interactive"`，并配置 `grader = { header_path, header_name, grader_path }`（NOI 风格）或 `interactor = "guess/interactor.cpp"`（testlib 交互器）。提交答案题：`kind = "answer"`，`answer_ext = "out"`。通信题：`kind = "communication"`，`communication = { sources = [...], interfaces = [...] }`；加上 `multi_program = true` 则每个源文件编译为独立程序，`interfaces` 中的 `grader.cpp` 单独编译运行并负责启动选手程序（与 LemonLime 的多程序通信题相同；grader 与选手程序在同一个沙箱内，进程数上限为程序数 + 1）。
 
 ## 关于 Windows Defender
 
@@ -93,7 +93,9 @@ cargo build --release -p oij
 cargo test --workspace
 ```
 
-使用 GNU 工具链且项目路径含空格时，请设置不含空格的 `CARGO_TARGET_DIR`（MinGW 的 `windres` 不支持空格路径）。
+使用 GNU 工具链且项目路径含空格时，请设置不含空格的 `CARGO_TARGET_DIR`（MinGW 的 `windres` 不支持空格路径）。GNU 构建的 `OIJudger.exe` 需要同目录下的 `WebView2Loader.dll`（构建时会生成在 `release/` 中，`scripts/package.py` 会一并打包）；MSVC 构建则不需要。
+
+打包：`python scripts/package.py <CARGO_TARGET_DIR> [MinGW 目录]`，生成 `dist/` 下的普通版与便携版压缩包。
 
 ## 许可
 

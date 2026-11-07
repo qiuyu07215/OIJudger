@@ -123,13 +123,11 @@ pub fn parse(json: &str) -> Result<Imported> {
             }
             k @ (3 | 4) => {
                 p.kind = ProblemKind::Communication;
-                p.communication =
-                    Some(Communication { sources: strs(t, "sourceFilesName"), interfaces: strs(t, "graderFilesPath") });
-                if k == 4 {
-                    warnings.push(format!(
-                        "{title}: multi-program communication is imported as single-program communication"
-                    ));
-                }
+                p.communication = Some(Communication {
+                    sources: strs(t, "sourceFilesName"),
+                    interfaces: strs(t, "graderFilesPath"),
+                    multi_program: k == 4,
+                });
             }
             k => warnings.push(format!("{title}: unknown task type {k}")),
         }

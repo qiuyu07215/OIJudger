@@ -173,11 +173,19 @@ function ensureGrader() {
 }
 const commSources = computed({
   get: () => prob.value?.communication?.sources.join("\n") ?? "",
-  set: (v: string) => { if (!prob.value) return; prob.value.communication = { sources: lines(v), interfaces: prob.value.communication?.interfaces ?? [] }; },
+  set: (v: string) => { if (!prob.value) return; prob.value.communication = { ...prob.value.communication, sources: lines(v), interfaces: prob.value.communication?.interfaces ?? [] }; },
 });
 const commInterfaces = computed({
   get: () => prob.value?.communication?.interfaces.join("\n") ?? "",
-  set: (v: string) => { if (!prob.value) return; prob.value.communication = { sources: prob.value.communication?.sources ?? [], interfaces: lines(v) }; },
+  set: (v: string) => { if (!prob.value) return; prob.value.communication = { ...prob.value.communication, sources: prob.value.communication?.sources ?? [], interfaces: lines(v) }; },
+});
+const commMulti = computed({
+  get: () => !!prob.value?.communication?.multi_program,
+  set: (v: boolean) => {
+    if (!prob.value) return;
+    const c = prob.value.communication ?? { sources: [], interfaces: [] };
+    prob.value.communication = { ...c, multi_program: v || undefined };
+  },
 });
 const lines = (s: string) => s.split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
 
@@ -479,6 +487,10 @@ function applyPattern() {
             <n-grid :cols="2" :x-gap="16">
               <n-form-item-gi :label="t('problems.commSources')"><n-input v-model:value="commSources" type="textarea" :rows="3" class="mono" /></n-form-item-gi>
               <n-form-item-gi :label="t('problems.commInterfaces')"><n-input v-model:value="commInterfaces" type="textarea" :rows="3" class="mono" /></n-form-item-gi>
+              <n-form-item-gi :span="2" :label="t('problems.commMulti')">
+                <n-switch v-model:value="commMulti" />
+                <span class="hint" style="margin-left: 10px">{{ t("problems.commMultiHint") }}</span>
+              </n-form-item-gi>
             </n-grid>
           </template>
 

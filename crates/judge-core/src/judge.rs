@@ -159,8 +159,10 @@ pub fn judge_problem(
 }
 
 enum Runner {
-    /// Contestant program at `run_dir/<exe>`.
-    Program(String),
+    /// Program `exe` in the run directory. `keep` lists every executable
+    /// that must survive cleaning between cases; `procs` is the process
+    /// limit (more than one for multi-program communication).
+    Program { exe: String, keep: Vec<String>, procs: u32 },
     /// Answer files submitted by the contestant.
     Answers,
 }
@@ -194,6 +196,16 @@ fn judge_inner(
             return empty(Status::NoSource, "No answer files found".into());
         }
         Runner::Answers
+    } else if is_multi_program(problem) {
+        match prepare_multi(ctx, worker, contestant, problem)? {
+            Prepared::Ready(r, log) => {
+                compile_log = log;
+                r
+            }
+            Prepared::Missing(m) => return empty(Status::NoSource, m),
+            Prepared::CompileError(m) => return empty(Status::CompileError, m),
+            Prepared::Config(m) => return empty(Status::SystemError, m),
+        }
     } else {
         let Some(req) = build_request(ctx, contestant, problem)? else {
             return empty(Status::NoSource, "Source file not found".into());
@@ -214,7 +226,7 @@ fn judge_inner(
                 if ctx.settings.patch_stack {
                     sandbox::set_stack_reserve(&dst, problem.max_memory_mb() << 20)?;
                 }
-                Runner::Program(name)
+                Runner::Program { exe: name.clone(), keep: vec![name], procs: 1 }
             }
         }
     };
@@ -239,7 +251,9 @@ fn judge_inner(
                 continue;
             }
             let r = match &runner {
-                Runner::Program(exe) => run_case(ctx, worker, problem, &tools, exe, st.score, st, case),
+                Runner::Program { exe, keep, procs } => {
+                    run_case(ctx, worker, problem, &tools, exe, keep, *procs, st.score, st, case)
+                }
                 Runner::Answers => answer_case(ctx, worker, contestant, problem, &tools, st.score, case),
             }
             .unwrap_or_else(|e| case_result(case, Verdict::SystemError, 0.0, format!("{e:#}")));
@@ -272,7 +286,7 @@ fn judge_inner(
 /// Compile ahead of judging (the compile pipeline); results land in the
 /// build cache, errors are reported later by the judging worker.
 pub(crate) fn prebuild(ctx: &JudgeContext, worker: &Worker, contestant: &str, problem: &Problem) {
-    if problem.kind == ProblemKind::Answer || ctx.cancel.load(Ordering::Relaxed) {
+    if problem.kind == ProblemKind::Answer || is_multi_program(problem) || ctx.cancel.load(Ordering::Relaxed) {
         return;
     }
     if let Ok(Some(Ok(req))) = build_request(ctx, contestant, problem) {
@@ -374,6 +388,8 @@ fn run_case(
     problem: &Problem,
     tools: &ProblemTools,
     exe: &str,
+    keep: &[String],
+    procs: u32,
     full: f64,
     st: &crate::model::Subtask,
     case: &Case,
@@ -387,9 +403,11 @@ fn run_case(
         return Ok(case_result(case, Verdict::SystemError, 0.0, format!("Answer file not found: {}", case.output)));
     }
     let run_dir = worker.run_dir();
-    worker.clean_dir(&run_dir, &[exe])?;
+    let keep: Vec<&str> = keep.iter().map(String::as_str).collect();
+    worker.clean_dir(&run_dir, &keep)?;
 
     let mut limits = sandbox::Limits::program(st.time_ms, st.memory_mb << 20);
+    limits.max_processes = procs.max(1);
     limits.output_bytes = ctx.settings.output_limit_mb << 20;
     limits.affinity = worker.affinity();
     let stderr_path = run_dir.join(STDERR_NAME);
@@ -588,4 +606,92 @@ fn answer_case(
     }
     let (v, ratio, msg) = evaluate(ctx, worker, problem, tools, &input, &output, &answer, full)?;
     Ok(case_result(case, v, ratio, msg))
+}
+
+fn is_multi_program(problem: &Problem) -> bool {
+    problem.kind == ProblemKind::Communication && problem.communication.as_ref().is_some_and(|c| c.multi_program)
+}
+
+enum Prepared {
+    Ready(Runner, String),
+    Missing(String),
+    CompileError(String),
+    Config(String),
+}
+
+/// Multi-program communication: compile every contestant source and the
+/// grader separately, then put all executables into a fresh run directory.
+fn prepare_multi(ctx: &JudgeContext, worker: &Worker, contestant: &str, problem: &Problem) -> Result<Prepared> {
+    let comm = problem.communication.clone().unwrap_or_default();
+    let file_name = |p: &Path| p.file_name().unwrap_or_default().to_string_lossy().into_owned();
+    let stem = |p: &Path| p.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+
+    let mut grader: Option<PathBuf> = None;
+    let mut headers: Vec<(PathBuf, String, bool)> = Vec::new();
+    for i in &comm.interfaces {
+        let p = ctx.dir.data_file(i);
+        if !p.is_file() {
+            return Ok(Prepared::Config(format!("Interface file not found: {i}")));
+        }
+        if Lang::from_path(&p).is_some() && stem(&p).eq_ignore_ascii_case("grader") {
+            grader = Some(p);
+        } else {
+            headers.push((p.clone(), file_name(&p), false));
+        }
+    }
+    let Some(grader) = grader else {
+        return Ok(Prepared::Config("Multi-program communication needs a grader.cpp among the interface files".into()));
+    };
+    if comm.sources.is_empty() {
+        return Ok(Prepared::Config("Communication problem has no source files configured".into()));
+    }
+
+    let compile = |main: &Path| -> Result<std::result::Result<(PathBuf, String), String>> {
+        let lang = Lang::from_path(main).unwrap_or(Lang::Cpp);
+        let Some((compiler, version)) = ctx.tools.get(lang) else {
+            return Ok(Err(format!("No compiler configured for {lang:?}")));
+        };
+        let mut files = vec![(main.to_path_buf(), file_name(main), true)];
+        files.extend(headers.iter().cloned());
+        let req = BuildRequest { files, compiler: compiler.clone(), extra_args: problem.compile_args.clone() };
+        Ok(match build(worker, &req, version, &ctx.dir.build_cache(), &ctx.settings.build)? {
+            BuildOutput::Ok { exe, log } => Ok((exe, log)),
+            BuildOutput::Failed { log } => Err(log),
+        })
+    };
+
+    let mut programs: Vec<(PathBuf, String)> = Vec::new();
+    let mut logs = String::new();
+    for n in &comm.sources {
+        let Some(src) = find_source(ctx.dir, contestant, problem, n) else {
+            return Ok(Prepared::Missing(format!("{n} not found")));
+        };
+        match compile(&src)? {
+            Ok((exe, log)) => {
+                if !log.trim().is_empty() {
+                    logs.push_str(&format!("[{}]\n{}\n", file_name(&src), log.trim()));
+                }
+                programs.push((exe, format!("{}.exe", stem(&src))));
+            }
+            Err(log) => return Ok(Prepared::CompileError(format!("[{}]\n{log}", file_name(&src)))),
+        }
+    }
+    let grader_exe = match compile(&grader)? {
+        Ok((exe, _)) => exe,
+        Err(log) => return Ok(Prepared::Config(format!("Grader failed to compile:\n{log}"))),
+    };
+    programs.push((grader_exe, "grader.exe".into()));
+
+    let run_dir = worker.fresh_run_dir()?;
+    let mut keep = Vec::new();
+    for (exe, name) in &programs {
+        let dst = run_dir.join(name);
+        retry_io(|| std::fs::copy(exe, &dst)).with_context(|| format!("copying {}", exe.display()))?;
+        if ctx.settings.patch_stack {
+            sandbox::set_stack_reserve(&dst, problem.max_memory_mb() << 20)?;
+        }
+        keep.push(name.clone());
+    }
+    let procs = programs.len() as u32 + 1;
+    Ok(Prepared::Ready(Runner::Program { exe: "grader.exe".into(), keep, procs }, logs))
 }

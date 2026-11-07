@@ -112,6 +112,11 @@ pub struct Communication {
     /// Interface files from `data/` compiled alongside.
     #[serde(default)]
     pub interfaces: Vec<String>,
+    /// LemonLime "CommunicationExec": every source becomes its own program,
+    /// `grader.*` from `interfaces` is compiled separately and run; it starts
+    /// the contestant programs itself (all inside the same sandbox).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub multi_program: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
