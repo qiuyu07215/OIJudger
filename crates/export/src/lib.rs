@@ -728,7 +728,7 @@ mod tests {
             cases: vec![Case { input: "a/1.in".into(), output: "a/1.out".into() }],
             depends: vec![],
         });
-        let contest = Contest { title: "T<est>".into(), problems: vec![p] };
+        let contest = Contest { title: "T<est>".into(), online: None, problems: vec![p] };
         let mut r1 = ProblemResult::empty("x,y", "a", 100.0, Status::Judged, "");
         r1.score = 100.0;
         let r2 = ProblemResult::empty("b", "a", 100.0, Status::CompileError, "err <b>");

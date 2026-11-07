@@ -14,21 +14,23 @@ use tauri::{AppHandle, Emitter, State};
 
 use crate::progress::{Progress, ProgressView};
 
-type CmdResult<T> = Result<T, String>;
+pub type CmdResult<T> = Result<T, String>;
 
-fn err(e: impl std::fmt::Display) -> String {
+pub fn err(e: impl std::fmt::Display) -> String {
     format!("{e:#}")
 }
 
 #[derive(Default)]
 pub struct AppState {
     project: RwLock<Option<Arc<Project>>>,
+    /// Online contest server, when running.
+    pub online: Mutex<Option<crate::online::OnlineRuntime>>,
     judging: Mutex<Option<Arc<AtomicBool>>>,
     progress: Arc<Mutex<Option<Progress>>>,
 }
 
 impl AppState {
-    fn project(&self) -> CmdResult<Arc<Project>> {
+    pub fn project(&self) -> CmdResult<Arc<Project>> {
         self.project.read().clone().ok_or_else(|| "No contest is open".to_string())
     }
     fn is_judging(&self) -> bool {
@@ -149,6 +151,9 @@ fn contest_view(project: &Project) -> CmdResult<ContestView> {
 
 #[tauri::command]
 pub async fn open_contest(path: String, state: State<'_, AppState>) -> CmdResult<ContestView> {
+    if state.online.lock().is_some() {
+        return Err("Stop the online contest first".into());
+    }
     if state.is_judging() {
         return Err("Judging is in progress".into());
     }
@@ -179,6 +184,9 @@ pub async fn close_contest(state: State<'_, AppState>) -> CmdResult<()> {
     if state.is_judging() {
         return Err("Judging is in progress".into());
     }
+    if state.online.lock().is_some() {
+        return Err("Stop the online contest first".into());
+    }
     *state.project.write() = None;
     Ok(())
 }
@@ -197,6 +205,11 @@ pub async fn save_contest_config(contest: Contest, state: State<'_, AppState>) -
     .await?;
     let project = Arc::new(project);
     *state.project.write() = Some(project.clone());
+    // A running online contest picks up the new problems and settings.
+    let online = state.online.lock().as_ref().map(|rt| rt.contest().clone());
+    if let Some(c) = online {
+        blocking(move || c.reload().map_err(err)).await?;
+    }
     blocking(move || contest_view(&project)).await
 }
 

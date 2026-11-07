@@ -74,6 +74,12 @@ function result(c: string, pname: string): ProblemResult | null {
 }
 
 let open = false;
+let onlineOn = false;
+function onlineView() {
+  return onlineOn
+    ? { running: true, addr: "0.0.0.0:8080", urls: ["http://192.168.1.20:8080/"], local_url: "http://127.0.0.1:8080/", bind: "0.0.0.0:8080", judging: true, judging_error: null, admin_password: "k7m2pq9x", queued: 2, running_jobs: 4, online: 87, format: "icpc" }
+    : { running: false, addr: "", urls: [], local_url: "", bind: "0.0.0.0:8080", judging: false, judging_error: null, admin_password: null, queued: 0, running_jobs: 0, online: 0, format: "" };
+}
 async function simulate(total: number) {
   const view: ProgressView = { running: true, compile_done: 0, compile_total: total, total, done: 0, workers: [null, null, null, null], counts: {}, elapsed_ms: 0, updates: [], messages: [], log: [], error: null };
   const start = Date.now();
@@ -152,6 +158,10 @@ export function installMocks() {
         case "open_contest": case "reload_contest": open = true; return { root: "D:\\contests\\noip-mock-3", contest, contestants: names, cells };
         case "save_contest_config": Object.assign(contest, a.contest); return { root: "D:\\contests\\noip-mock-3", contest, contestants: names, cells };
         case "close_contest": open = false; return null;
+        case "online_status": return onlineView();
+        case "online_start": onlineOn = true; return onlineView();
+        case "online_stop": onlineOn = false; return null;
+        case "online_open_jury": return null;
         case "cache_usage": return { files: 960, bytes: 119_000_000 };
         case "clear_cache": return { files: 960, bytes: 119_000_000 };
         case "get_result": return result(a.contestant as string, a.problem as string);

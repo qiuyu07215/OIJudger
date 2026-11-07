@@ -1,0 +1,22 @@
+[package]
+name = "online"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "OIJudger online contests: accounts, submissions, scoring (ICPC / OI / IOI), scoreboard freeze, clarifications, balloons"
+
+[dependencies]
+judge-core.workspace = true
+store.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+parking_lot.workspace = true
+rusqlite.workspace = true
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+argon2 = "0.5"
+rand = "0.8"
+
+[dev-dependencies]
+sandbox.workspace = true
+tempfile.workspace = true

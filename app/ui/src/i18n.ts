@@ -111,7 +111,7 @@ const zh = {
     matched: "高亮行为两份代码中匹配的片段",
   },
   menu: {
-    file: "文件", contest: "比赛", judge: "评测", tools: "工具", help: "帮助",
+    file: "文件", contest: "比赛", judge: "评测", tools: "工具", help: "帮助", online: "在线比赛（局域网）…",
     open: "打开比赛文件夹…", importCdf: "导入 LemonLime 比赛…", recent: "最近打开", openDir: "打开比赛目录",
     close: "关闭比赛", reload: "刷新选手与试题", detect: "自动识别试题", export: "导出成绩",
     judgeAll: "测试全部", judgeStale: "测试未测试 / 已变化", judgeSelected: "测试选中选手", stop: "停止评测",
@@ -123,6 +123,15 @@ const zh = {
     title: "清理编译缓存", empty: "编译缓存是空的",
     confirm: "删除本比赛的编译缓存（{n} 个文件，约 {mb} MB）？评测结果会保留；之后再评测时需要重新编译。",
     done: "已清理，释放约 {mb} MB",
+  },
+  online: {
+    title: "在线比赛（局域网）",
+    intro: "在本机开启网页服务：选手在浏览器中登录、看题、提交并实时得到结果；评委在网页中管理比赛。界面与操作方式同 DOMjudge。",
+    bind: "监听地址", start: "启动服务", stop: "停止服务", running: "运行中", urls: "选手访问地址",
+    firewall: "首次启动时 Windows 防火墙可能会询问是否允许访问网络，请允许“专用网络”。",
+    stats: "在线 {o} 人 · 排队 {q} · 评测中 {r}", copy: "复制", copied: "已复制",
+    local: "本机访问：{u}", adminPw: "已创建管理员账号（只显示这一次，请记下）：", openJury: "打开评委界面",
+    judgingError: "评测服务未能启动：{e}",
   },
   statusbar: {
     ready: "就绪", judging: "评测中 {done}/{total}", contestants: "{n} 名选手", problems: "{n} 道试题",
@@ -250,7 +259,7 @@ const en: typeof zh = {
     matched: "Highlighted lines match between the two submissions",
   },
   menu: {
-    file: "File", contest: "Contest", judge: "Judge", tools: "Tools", help: "Help",
+    file: "File", contest: "Contest", judge: "Judge", tools: "Tools", help: "Help", online: "Online contest (LAN)…",
     open: "Open contest folder…", importCdf: "Import LemonLime contest…", recent: "Recent", openDir: "Open contest folder in Explorer",
     close: "Close contest", reload: "Reload contestants and problems", detect: "Detect problems", export: "Export results",
     judgeAll: "Judge all", judgeStale: "Judge new / changed", judgeSelected: "Judge selected contestants", stop: "Stop judging",
@@ -262,6 +271,15 @@ const en: typeof zh = {
     title: "Clear compile cache", empty: "The compile cache is empty",
     confirm: "Delete this contest's compile cache ({n} files, about {mb} MB)? Results are kept; programs will be compiled again the next time they are judged.",
     done: "Cache cleared, about {mb} MB freed",
+  },
+  online: {
+    title: "Online contest (LAN)",
+    intro: "Run a web server on this machine: teams log in from a browser, read problems, submit and get results live; the jury manages the contest in the browser. Pages and workflow follow DOMjudge.",
+    bind: "Listen address", start: "Start server", stop: "Stop server", running: "running", urls: "Address for teams",
+    firewall: "On first start Windows Firewall may ask for network access; allow it for private networks.",
+    stats: "{o} online · {q} queued · {r} judging", copy: "Copy", copied: "Copied",
+    local: "On this machine: {u}", adminPw: "Admin account created (shown only now, write it down):", openJury: "Open jury interface",
+    judgingError: "Judging service did not start: {e}",
   },
   statusbar: {
     ready: "Ready", judging: "Judging {done}/{total}", contestants: "{n} contestants", problems: "{n} problems",

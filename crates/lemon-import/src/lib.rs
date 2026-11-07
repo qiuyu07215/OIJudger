@@ -58,7 +58,7 @@ fn ident(source: &str, title: &str, index: usize) -> String {
 pub fn parse(json: &str) -> Result<Imported> {
     let root: Value = serde_json::from_str(json).context("not a LemonLime JSON contest file")?;
     let mut warnings = Vec::new();
-    let mut contest = Contest { title: s(&root, "contestTitle").to_string(), problems: Vec::new() };
+    let mut contest = Contest { title: s(&root, "contestTitle").to_string(), online: None, problems: Vec::new() };
     let tasks = root.get("tasks").and_then(Value::as_array).cloned().unwrap_or_default();
     for (ti, t) in tasks.iter().enumerate() {
         let title = s(t, "problemTitle").to_string();

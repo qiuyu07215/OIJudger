@@ -17,6 +17,7 @@ import Problems from "./views/Problems.vue";
 import Stats from "./views/Stats.vue";
 import Plagiarism from "./views/Plagiarism.vue";
 import SettingsModal from "./views/SettingsModal.vue";
+import OnlinePanel from "./views/OnlinePanel.vue";
 import JudgingDialog from "./components/JudgingDialog.vue";
 
 const { t } = useI18n();
@@ -25,6 +26,7 @@ const dialog = useDialog();
 const notification = useNotification();
 const tab = ref<"summary" | "results" | "stats" | "plagiarism">("results");
 const showSettings = ref(false);
+const showOnline = ref(false);
 const selected = ref<string[]>([]);
 const problemsRef = ref<InstanceType<typeof Problems> | null>(null);
 const unlisten: (() => void)[] = [];
@@ -69,6 +71,7 @@ const menus = computed<{ key: string; label: string; options: DropdownOption[] }
     options: [
       { label: t("menu.reload"), key: "reload", disabled: !hasContest.value || judging.value, icon: icon(Refresh) },
       { label: t("menu.detect"), key: "detect", disabled: !hasContest.value || judging.value },
+      { label: t("menu.online"), key: "online", disabled: !hasContest.value },
       {
         label: t("menu.export"),
         key: "export",
@@ -148,6 +151,7 @@ async function onMenu(key: string) {
     case "openDir": return openPath(state.root);
     case "close": return closeContest();
     case "reload": return reloadContest();
+    case "online": showOnline.value = true; return;
     case "detect":
       tab.value = "summary";
       setTimeout(() => problemsRef.value?.detect(), 50);
@@ -295,6 +299,7 @@ watch(
     <Welcome v-else class="content" @open="open" @settings="showSettings = true" />
   </div>
   <SettingsModal v-model:show="showSettings" />
+  <OnlinePanel v-model:show="showOnline" />
   <JudgingDialog />
 </template>
 

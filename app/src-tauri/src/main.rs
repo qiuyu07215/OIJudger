@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
+mod online;
 mod progress;
 
 use clap::Parser;
@@ -82,6 +83,10 @@ fn main() {
             commands::similarity,
             commands::cache_usage,
             commands::clear_cache,
+            online::online_status,
+            online::online_start,
+            online::online_stop,
+            online::online_open_jury,
         ])
         .run(tauri::generate_context!())
         .expect("error while running OIJudger");

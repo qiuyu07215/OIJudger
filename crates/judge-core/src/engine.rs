@@ -127,7 +127,7 @@ impl Engine {
     }
 
     /// Make compiler installations readable from inside the sandbox.
-    fn prepare_toolchains(&self, sink: &(dyn Fn(Event) + Sync)) -> Result<()> {
+    pub(crate) fn prepare_toolchains(&self, sink: &(dyn Fn(Event) + Sync)) -> Result<()> {
         let mut done: Vec<PathBuf> = Vec::new();
         for (c, _) in &self.tools.compilers {
             let root = c.toolchain_root();
@@ -151,7 +151,7 @@ impl Engine {
         Ok(())
     }
 
-    fn testlib_path(&self) -> Result<PathBuf> {
+    pub(crate) fn testlib_path(&self) -> Result<PathBuf> {
         let p = self.dir.state().join("testlib.h");
         if std::fs::read_to_string(&p).map(|s| s != TESTLIB_H).unwrap_or(true) {
             std::fs::create_dir_all(self.dir.state())?;
@@ -192,7 +192,7 @@ impl Engine {
         }
     }
 
-    fn problem_tools(
+    pub(crate) fn problem_tools(
         &self,
         worker: &Worker,
         p: &Problem,

@@ -108,6 +108,34 @@ pub enum Command {
     Compilers,
     /// Verify sandbox isolation and limits on this machine
     Selftest,
+    /// Run an online contest: web server for contestants, jury and scoreboard (LAN)
+    Serve {
+        dir: PathBuf,
+        /// Address to listen on (default from contest.toml [online], 0.0.0.0:8080)
+        #[arg(long)]
+        bind: Option<String>,
+    },
+    /// Online contest accounts
+    Accounts {
+        #[command(subcommand)]
+        cmd: AccountsCmd,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum AccountsCmd {
+    /// Create accounts from a CSV file: username,display name,group,seat[,password]
+    Import {
+        dir: PathBuf,
+        csv: PathBuf,
+        /// Write the user names and passwords to this CSV file
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+    },
+    /// List accounts
+    List { dir: PathBuf },
+    /// Set a new random password
+    Reset { dir: PathBuf, username: String },
 }
 
 pub fn run(cli: Cli) -> Result<i32> {
@@ -126,6 +154,7 @@ pub fn run(cli: Cli) -> Result<i32> {
             let file = dir.join(judge_core::model::CONTEST_FILE);
             anyhow::ensure!(force || !file.exists(), "{} exists (use --force)", file.display());
             let c = judge_core::Contest {
+                online: None,
                 title: absolute(&dir).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
                 problems: judge_core::discover::detect_problems(&cd, time, memory),
             };
@@ -260,6 +289,12 @@ pub fn run(cli: Cli) -> Result<i32> {
             }
             Ok(0)
         }
+        Command::Serve { dir, bind } => crate::serve::serve(&dir, bind, settings),
+        Command::Accounts { cmd } => match cmd {
+            AccountsCmd::Import { dir, csv, out } => crate::serve::import(&dir, &csv, out, settings),
+            AccountsCmd::List { dir } => crate::serve::list(&dir, settings),
+            AccountsCmd::Reset { dir, username } => crate::serve::reset(&dir, &username, settings),
+        },
         Command::Selftest => {
             println!("Sandbox self test");
             let ok = crate::selftest::run(&settings, &mut |r| {

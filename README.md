@@ -9,6 +9,7 @@
 - **判分**：多种比较方式、testlib 校验器、Lemon 6 参数校验器、测试点内多组数据取最低分、子任务依赖。
 - **分析**：分数分布（含前缀和/后缀和）、平均分、中位数、标准差、区分度、测试点通过率、试题相关性、按 `contestants.csv` 分组对比；代码查重（忽略变量名、注释与格式）。
 - **导出**：HTML（含/不含详细结果）、Excel、CSV。
+- **在线比赛（局域网）**：评测机开启网页服务，选手在浏览器中看题、提交并实时得到结果；页面结构与交互逻辑同 DOMjudge（换为本程序的配色），支持 ICPC、OI、IOI 三种赛制，含答疑、封榜与滚榜、气球、打印。
 - **界面**：中文 / English，跟随系统深浅色；同一套功能也可用命令行。
 
 ## 快速开始
@@ -43,6 +44,10 @@ oijudger-cli init <比赛目录>
 oijudger-cli import-lemon <比赛.cdf>
 oijudger-cli compilers
 oijudger-cli selftest
+oijudger-cli serve <比赛目录> [--bind 0.0.0.0:8080]      # 在线比赛
+oijudger-cli accounts import <比赛目录> <名单.csv> [-o 密码.csv]
+oijudger-cli accounts list <比赛目录>
+oijudger-cli accounts reset <比赛目录> <用户名>
 ```
 
 ## 配置文件 `contest.toml`
@@ -72,6 +77,75 @@ cases = [{ input = "sum/2.in", output = "sum/2.out" }, { input = "sum/3.in", out
 ```
 
 交互题：`kind = "interactive"`，并配置 `grader = { header_path, header_name, grader_path }`（NOI 风格）或 `interactor = "guess/interactor.cpp"`（testlib 交互器）。提交答案题：`kind = "answer"`，`answer_ext = "out"`。通信题：`kind = "communication"`，`communication = { sources = [...], interfaces = [...] }`；加上 `multi_program = true` 则每个源文件编译为独立程序，`interfaces` 中的 `grader.cpp` 单独编译运行并负责启动选手程序（与 LemonLime 的多程序通信题相同；grader 与选手程序在同一个沙箱内，进程数上限为程序数 + 1）。
+
+## 在线比赛（局域网）
+
+评测机开启网页服务，选手用浏览器访问 `http://评测机IP:8080/`。页面结构与操作方式同 DOMjudge，只是换成了本程序的配色。
+
+**启动**
+- 桌面程序：打开比赛后，选“比赛 → 在线比赛（局域网）…”，点击“启动服务”。
+- 命令行：`oijudger-cli serve <比赛目录>`。
+- 首次启动会创建管理员账号 `admin`，并显示一次密码。忘记密码可用 `oijudger-cli accounts reset <比赛目录> admin` 重置。
+- 首次启动时 Windows 防火墙会询问是否允许访问网络，请允许“专用网络”。
+
+**页面**
+| 页面 | 地址 | 使用者 |
+|---|---|---|
+| 选手首页 | `/team` | 选手：本队成绩行、提交记录、答疑与提问；顶栏绿色“提交”按钮 |
+| 题目集 | `/team/problems` | 选手：题面、样例、时空限制、各时段通过情况 |
+| 打印 | `/team/print` | 选手：提交打印任务 |
+| 榜单 | `/scoreboard` | 所有人；`?projector=1` 为投影模式（自动滚动） |
+| 评委 | `/jury` | 评委 / 管理员：提交、重测、忽略、答疑、账号、比赛设置 |
+| 滚榜 | `/jury/resolver` | 评委：ICPC 赛后逐个揭晓封榜期间的结果 |
+| 气球 / 打印队列 | `/balloons`、`/print-queue` | 志愿者 |
+
+**账号**：管理员在“账号”页导入 CSV（`用户名,显示名称,学校,座位[,密码]`），或运行 `oijudger-cli accounts import`。生成的密码只显示一次，可导出 CSV 或打印密码条。角色有选手、评委、志愿者、管理员。
+
+**赛制**
+- **ICPC**：实时显示结果；按通过题数和罚时排名（每次错误提交罚时 20 分钟，编译错误默认不计）；遇到第一个未通过的测试点即停止评测；比赛结束前可封榜；可设金银铜牌数。
+- **IOI**：实时显示各子任务得分；每题取各子任务最高分之和（也可设为取单次提交最高分）。
+- **OI**：比赛中只显示“已提交”（也可设为告知是否编译通过）；赛后评委点“赛后评测”，用每人每题最后一次提交评测，再“公布成绩”。
+
+**与 DOMjudge 相同的规则**
+- **提交**：
+  - 选择源文件后，按文件名自动识别题目（题号字母或题目名）和语言，确认后提交。
+  - 比赛结束后的提交记为“太迟”（TOO-LATE），保存但不评测。
+- **封榜**：其他人的榜单停止更新；选手首页上本队那一行照常更新，名次显示为“?”。
+- **重测与忽略**：
+  - 评委可重测单个提交，或某题 / 某队的全部提交。已正确的提交只有管理员勾选后才重测。
+  - 被忽略的提交如同没有提交过。
+- **公平排队**：已有提交在排队或评测中的队伍，新提交优先级较低。
+
+**配置**：`contest.toml` 的 `[online]` 段，也可在评委页面“比赛设置”中修改。
+
+```toml
+[online]
+format = "icpc"              # icpc | oi | ioi
+start = "2026-11-08 09:00"   # 本地时间
+duration_min = 300
+freeze_min = 60              # 结束前多少分钟封榜，0 不封榜
+penalty_min = 20
+medals = [4, 4, 4]           # 金 / 银 / 铜牌数
+submit_interval_s = 10       # 两次提交最短间隔
+bind = "0.0.0.0:8080"
+
+[[problem]]
+name = "sum"
+letter = "A"                 # 题号
+color = "#e53935"            # 气球颜色
+statement = "sum/statement.pdf"   # PDF、Markdown（支持 $公式$）或 HTML，放在 data/ 下
+samples = ["sum/sample1.in", "sum/sample1.ans"]   # 省略时自动使用 data/<题>/sample*
+```
+
+**数据与离线工具**：
+- 每次提交都存档在 `.oij/submissions/`。
+- ICPC / OI 的最后一次提交、IOI 的最高分提交会写入 `source/<选手>/<题>/`，所以桌面程序的离线评测、统计、查重、导出都能直接使用。
+
+**安全**：
+- 评测仍在沙箱中进行。
+- 选手只能看到自己的提交，比赛开始前看不到题目，测试数据不会通过网页提供。
+- 会话 Cookie 为 HttpOnly + SameSite=Strict，写操作有 CSRF 校验，登录失败有频率限制。
+- 网页服务为 HTTP，适合局域网 / 机房，不建议直接暴露到公网。
 
 ## 编译缓存占用空间
 
@@ -104,6 +178,7 @@ Add-MpPreference -ExclusionPath "D:\比赛目录\.oij"   # 编译缓存，程序
 
 ```
 cd app/ui && npm install && npm run build
+cd app/web && npm install && npm run build      # 在线比赛网页（编译时嵌入服务端）
 cargo build --release -p oijudger --features oijudger/custom-protocol
 cargo build --release -p oij
 cargo test --workspace

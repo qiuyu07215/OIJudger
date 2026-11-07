@@ -160,6 +160,8 @@ pub struct Workspace {
     /// Extra workers that only compile (the compile pipeline).
     pub builders: Vec<Worker>,
     root: PathBuf,
+    /// Unique per workspace; part of the directory and profile names.
+    tag: String,
     /// Held open without sharing so other instances know we are alive.
     lock: Option<std::fs::File>,
 }
@@ -225,7 +227,11 @@ impl Workspace {
         let count = if count == 0 { default_worker_count() } else { count };
         let base = work_base();
         cleanup_stale(&base);
-        let root = base.join(format!("{}", std::process::id()));
+        // Several workspaces can live in one process (an online contest's
+        // judging service and an offline run): each gets its own tag.
+        static INSTANCE: AtomicU64 = AtomicU64::new(0);
+        let tag = format!("{}-{}", std::process::id(), INSTANCE.fetch_add(1, Ordering::Relaxed));
+        let root = base.join(&tag);
         std::fs::create_dir_all(&root).with_context(|| format!("creating {}", root.display()))?;
         let lock = {
             use std::os::windows::fs::OpenOptionsExt;
@@ -246,25 +252,25 @@ impl Workspace {
                 (true, false) => 0,
                 (false, _) => builder_affinity,
             };
-            let w = Worker::create(&root, i, affinity)?;
+            let w = Worker::create(&root, &tag, i, affinity)?;
             if i < count {
                 workers.push(w);
             } else {
                 extra.push(w);
             }
         }
-        Ok(Workspace { workers, builders: extra, root, lock: Some(lock) })
+        Ok(Workspace { workers, builders: extra, root, tag, lock: Some(lock) })
     }
 }
 
 impl Worker {
-    fn create(root: &Path, i: usize, affinity: usize) -> Result<Worker> {
-        // Per-process names: a second running instance must not share
-        // container identities (and thus file access) with this one.
-        let pid = std::process::id();
-        let container = sandbox::Container::open(&run_profile(pid, i))
+    fn create(root: &Path, tag: &str, i: usize, affinity: usize) -> Result<Worker> {
+        // Per-workspace names: another workspace (in this or another
+        // process) must not share container identities, and thus file
+        // access, with this one.
+        let container = sandbox::Container::open(&run_profile(tag, i))
             .with_context(|| format!("creating sandbox for worker {i}"))?;
-        let build_container = sandbox::Container::open_scratch(&build_profile(pid, i))
+        let build_container = sandbox::Container::open_scratch(&build_profile(tag, i))
             .with_context(|| format!("creating build sandbox for worker {i}"))?;
         let wroot = root.join(format!("w{i}"));
         for d in ["build", "run", "check"] {
@@ -290,18 +296,18 @@ impl Worker {
     }
 }
 
-fn run_profile(pid: u32, i: usize) -> String {
-    format!("OIJudger.{pid}.W{i}")
+fn run_profile(tag: &str, i: usize) -> String {
+    format!("OIJudger.{tag}.W{i}")
 }
 
-fn build_profile(pid: u32, i: usize) -> String {
-    format!("OIJudger.{pid}.B{i}")
+fn build_profile(tag: &str, i: usize) -> String {
+    format!("OIJudger.{tag}.B{i}")
 }
 
-fn delete_profiles(pid: u32, count: usize) {
+fn delete_profiles(tag: &str, count: usize) {
     for i in 0..count {
-        sandbox::Container::delete_profile(&run_profile(pid, i));
-        sandbox::Container::delete_profile(&build_profile(pid, i));
+        sandbox::Container::delete_profile(&run_profile(tag, i));
+        sandbox::Container::delete_profile(&build_profile(tag, i));
     }
 }
 
@@ -313,7 +319,7 @@ impl Drop for Workspace {
         let n = self.workers.len() + self.builders.len();
         self.workers.clear();
         self.builders.clear();
-        delete_profiles(std::process::id(), n);
+        delete_profiles(&self.tag, n);
         drop(self.lock.take());
         defer_delete(self.root.clone());
     }
@@ -322,11 +328,7 @@ impl Drop for Workspace {
 /// Remove scratch directories left behind by crashed sessions.
 fn cleanup_stale(base: &Path) {
     let Ok(entries) = std::fs::read_dir(base) else { return };
-    let me = std::process::id().to_string();
     for e in entries.flatten() {
-        if e.file_name().to_string_lossy() == me {
-            continue;
-        }
         // A live instance keeps its lock file open without sharing, so it
         // cannot be deleted; only then is the directory really stale.
         let lock = e.path().join(LOCK_FILE);
@@ -334,8 +336,11 @@ fn cleanup_stale(base: &Path) {
             continue;
         }
         let _ = std::fs::remove_dir_all(e.path());
-        if let Ok(pid) = e.file_name().to_string_lossy().parse::<u32>() {
-            delete_profiles(pid, MAX_WORKERS);
+        // Directory names are the workspace tags ("<pid>-<n>"; older
+        // versions used "<pid>"), which are also in the profile names.
+        let tag = e.file_name().to_string_lossy().into_owned();
+        if tag.chars().all(|c| c.is_ascii_digit() || c == '-') {
+            delete_profiles(&tag, MAX_WORKERS);
         }
     }
 }

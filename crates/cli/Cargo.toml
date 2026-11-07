@@ -20,6 +20,9 @@ analysis.workspace = true
 export.workspace = true
 lemon-import.workspace = true
 sandbox.workspace = true
+online.workspace = true
+server.workspace = true
+tokio = { version = "1", features = ["rt-multi-thread", "signal"] }
 anyhow.workspace = true
 clap.workspace = true
 parking_lot.workspace = true

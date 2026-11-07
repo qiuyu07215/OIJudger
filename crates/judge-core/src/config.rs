@@ -91,6 +91,7 @@ impl AppSettings {
             overlap_compile: self.overlap_compile,
             cache_limit_mb: self.cache_limit_mb,
             patch_stack: self.patch_stack,
+            stop_on_failure: false,
             output_limit_mb: self.output_limit_mb.max(1),
             build: BuildLimits { cpu_ms: self.compile_time_ms.max(1000), memory_mb: self.compile_memory_mb.max(256) },
             checker: CheckerLimits {

@@ -1,0 +1,102 @@
+// Warm, Claude-style palette: cream / ivory surfaces, near-black ink and a
+// terracotta accent. Light and dark are tuned separately, not inverted.
+import type { GlobalThemeOverrides } from "naive-ui";
+
+export const palette = {
+  light: {
+    app: "#F5F4ED", // window background
+    panel: "#EFEDE4", // side panels, toolbars, table headers
+    surface: "#FFFFFF", // cards, inputs, table body
+    raised: "#FAF9F5",
+    border: "#E3E0D5",
+    divider: "#E8E6DC",
+    text: "#141413",
+    text2: "#3D3D3A",
+    text3: "#73726C",
+    accent: "#D97757",
+    accentHover: "#C6613F",
+    accentPressed: "#B0532F",
+    accentSoft: "#F6E6DD",
+    success: "#4F7A3A",
+    warning: "#B7791F",
+    error: "#B5432E",
+    info: "#5E7B99",
+  },
+  dark: {
+    app: "#262624",
+    panel: "#1F1E1D",
+    surface: "#30302E",
+    raised: "#2B2B29",
+    border: "#3E3E38",
+    divider: "#383833",
+    text: "#FAF9F5",
+    text2: "#D6D4CA",
+    text3: "#9C9A92",
+    accent: "#D97757",
+    accentHover: "#E2896B",
+    accentPressed: "#C6613F",
+    accentSoft: "#4A3128",
+    success: "#8DB876",
+    warning: "#E0A84A",
+    error: "#E27D66",
+    info: "#93AECB",
+  },
+};
+
+export function overrides(dark: boolean): GlobalThemeOverrides {
+  const p = dark ? palette.dark : palette.light;
+  return {
+    common: {
+      fontFamily: '"Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif',
+      fontFamilyMono: '"Cascadia Mono", "JetBrains Mono", Consolas, monospace',
+      primaryColor: p.accent,
+      primaryColorHover: p.accentHover,
+      primaryColorPressed: p.accentPressed,
+      primaryColorSuppl: p.accentHover,
+      successColor: p.success,
+      successColorHover: p.success,
+      successColorPressed: p.success,
+      warningColor: p.warning,
+      warningColorHover: p.warning,
+      warningColorPressed: p.warning,
+      errorColor: p.error,
+      errorColorHover: p.error,
+      errorColorPressed: p.error,
+      infoColor: p.info,
+      infoColorHover: p.info,
+      infoColorPressed: p.info,
+      bodyColor: p.app,
+      cardColor: p.surface,
+      modalColor: p.surface,
+      popoverColor: p.surface,
+      tableColor: p.surface,
+      tableHeaderColor: p.panel,
+      inputColor: p.surface,
+      actionColor: p.panel,
+      borderColor: p.border,
+      dividerColor: p.divider,
+      textColorBase: p.text,
+      textColor1: p.text,
+      textColor2: p.text2,
+      textColor3: p.text3,
+      hoverColor: dark ? "rgba(250,249,245,0.06)" : "rgba(20,20,19,0.045)",
+      borderRadius: "8px",
+      borderRadiusSmall: "6px",
+    },
+    Layout: { color: p.app, headerColor: p.panel, siderColor: p.panel, footerColor: p.panel, headerBorderColor: p.divider },
+    DataTable: {
+      thColor: p.panel,
+      tdColor: p.surface,
+      tdColorHover: dark ? "#363633" : "#FBFAF6",
+      tdColorStriped: p.raised,
+      borderColor: p.divider,
+      thTextColor: p.text2,
+      thFontWeight: "600",
+    },
+    Tabs: { tabTextColorActiveLine: p.text, tabTextColorHoverLine: p.text, barColor: p.accent, tabFontWeightActive: "600" },
+    Card: { borderColor: p.border, color: p.surface },
+    Tree: { nodeColorActive: p.accentSoft, nodeColorHover: dark ? "#363633" : "#ECE9DF" },
+    Button: { textColorTertiary: p.text2 },
+    Tag: { borderRadius: "6px" },
+  };
+}

@@ -20,8 +20,121 @@ pub const CONTEST_FILE: &str = "contest.toml";
 pub struct Contest {
     #[serde(default)]
     pub title: String,
+    /// Online contest settings (`[online]`); absent for offline judging.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub online: Option<OnlineConfig>,
     #[serde(default, rename = "problem")]
     pub problems: Vec<Problem>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ContestFormat {
+    /// Live verdicts, ranked by solved problems and penalty time.
+    #[default]
+    Icpc,
+    /// No feedback during the contest; the last submission is judged after it.
+    Oi,
+    /// Live per-subtask scores.
+    Ioi,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum IoiScoring {
+    /// Best score of every subtask over all submissions, summed (IOI 2017+).
+    #[default]
+    MaxSubtask,
+    /// Best single submission.
+    MaxSubmission,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OiFeedback {
+    /// Only "submitted".
+    #[default]
+    None,
+    /// Whether the program compiles (CCF style compile check).
+    Compile,
+}
+
+/// `[online]` section of `contest.toml`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OnlineConfig {
+    #[serde(default)]
+    pub format: ContestFormat,
+    /// Local start time, `YYYY-MM-DD HH:MM[:SS]`; empty = not scheduled.
+    #[serde(default)]
+    pub start: String,
+    #[serde(default = "default_duration")]
+    pub duration_min: u64,
+    /// Freeze the public scoreboard this many minutes before the end (0 = never).
+    #[serde(default)]
+    pub freeze_min: u64,
+    /// ICPC: penalty minutes per rejected submission before the first accept.
+    #[serde(default = "default_penalty")]
+    pub penalty_min: u64,
+    /// ICPC: whether compile errors count as rejected submissions.
+    #[serde(default)]
+    pub compile_error_penalty: bool,
+    #[serde(default)]
+    pub ioi_scoring: IoiScoring,
+    #[serde(default)]
+    pub oi_feedback: OiFeedback,
+    #[serde(default = "default_max_source_kb")]
+    pub max_source_kb: u64,
+    /// Minimum seconds between two submissions of one contestant.
+    #[serde(default = "default_submit_interval")]
+    pub submit_interval_s: u64,
+    /// Address the web server listens on.
+    #[serde(default = "default_bind")]
+    pub bind: String,
+    /// Scoreboard visible without logging in.
+    #[serde(default = "default_true")]
+    pub public_scoreboard: bool,
+    /// Gold, silver and bronze medal counts shown on the scoreboard (0 = none).
+    #[serde(default)]
+    pub medals: [u32; 3],
+}
+
+fn default_duration() -> u64 {
+    300
+}
+fn default_penalty() -> u64 {
+    20
+}
+fn default_max_source_kb() -> u64 {
+    64
+}
+fn default_submit_interval() -> u64 {
+    10
+}
+fn default_bind() -> String {
+    "0.0.0.0:8080".into()
+}
+fn default_true() -> bool {
+    true
+}
+
+impl Default for OnlineConfig {
+    fn default() -> Self {
+        OnlineConfig {
+            format: ContestFormat::Icpc,
+            start: String::new(),
+            duration_min: default_duration(),
+            freeze_min: 0,
+            penalty_min: default_penalty(),
+            compile_error_penalty: false,
+            ioi_scoring: IoiScoring::MaxSubtask,
+            oi_feedback: OiFeedback::None,
+            max_source_kb: default_max_source_kb(),
+            submit_interval_s: default_submit_interval(),
+            bind: default_bind(),
+            public_scoreboard: true,
+            medals: [0, 0, 0],
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -179,6 +292,17 @@ pub struct Problem {
     /// Extra compiler arguments for this problem (appended).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub compile_args: String,
+    /// Online contests: short label ("A") and balloon colour ("#e53935").
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub letter: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub color: String,
+    /// Statement shown to contestants: PDF, Markdown or HTML file in `data/`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub statement: String,
+    /// Sample files in `data/` contestants may download (default: `<problem>/sample*`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub samples: Vec<String>,
     #[serde(default, rename = "subtask")]
     pub subtasks: Vec<Subtask>,
 }
@@ -206,6 +330,10 @@ impl Problem {
             interactor: None,
             communication: None,
             compile_args: String::new(),
+            letter: String::new(),
+            color: String::new(),
+            statement: String::new(),
+            samples: Vec::new(),
             subtasks: Vec::new(),
         }
     }
@@ -306,17 +434,34 @@ impl Contest {
 #[derive(Debug, Clone)]
 pub struct ContestDir {
     pub root: PathBuf,
+    /// Look for contestant files here instead of `source/` (online
+    /// submissions are stored one directory per submission).
+    pub source_root: Option<PathBuf>,
 }
 
 impl ContestDir {
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        ContestDir { root: root.into() }
+        ContestDir { root: root.into(), source_root: None }
+    }
+    /// The same contest, with contestant files looked up in `dir`.
+    pub fn with_source_root(&self, dir: impl Into<PathBuf>) -> ContestDir {
+        ContestDir { root: self.root.clone(), source_root: Some(dir.into()) }
     }
     pub fn data(&self) -> PathBuf {
         self.root.join("data")
     }
     pub fn source(&self) -> PathBuf {
+        self.source_root.clone().unwrap_or_else(|| self.root.join("source"))
+    }
+    /// `source/` of the contest itself, regardless of `source_root`.
+    pub fn contest_source(&self) -> PathBuf {
         self.root.join("source")
+    }
+    pub fn online_db(&self) -> PathBuf {
+        self.state().join("online.db")
+    }
+    pub fn submissions(&self) -> PathBuf {
+        self.state().join("submissions")
     }
     pub fn state(&self) -> PathBuf {
         self.root.join(".oij")

@@ -6,3 +6,5 @@ node_modules/
 !assets/**/*.exe
 /dist
 /app/src-tauri/gen
+
+/app/web/dist

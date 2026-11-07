@@ -52,6 +52,7 @@ impl Project {
             imported.contest
         } else {
             let c = Contest {
+                online: None,
                 title: root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
                 problems: detect_problems(&dir, 1000, 512),
             };

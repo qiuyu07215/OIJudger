@@ -1,0 +1,292 @@
+/* Same warm palette as the desktop app. Pages scroll normally. */
+:root {
+  color-scheme: light;
+  --app: #f5f4ed;
+  --panel: #efede4;
+  --surface: #ffffff;
+  --raised: #faf9f5;
+  --border: #e3e0d5;
+  --divider: #e8e6dc;
+  --text: #141413;
+  --text2: #3d3d3a;
+  --text3: #73726c;
+  --accent: #d97757;
+  --accent-soft: #f6e6dd;
+
+  /* verdicts */
+  --ok: #3c6a28;
+  --ok-bg: #e2ead7;
+  --bad: #9e3b26;
+  --bad-bg: #f6ddd3;
+  --ce: #6b4a86;
+  --ce-bg: #ebe3ef;
+  --pend: #85601a;
+  --pend-bg: #f6ead0;
+  /* DOMjudge scoreboard meanings, warm tones */
+  --sb-solved: #8cc67a;
+  --sb-solved-ink: #1e3a14;
+  --sb-first: #3f8a3a;
+  --sb-first-ink: #ffffff;
+  --sb-wrong: #e8907a;
+  --sb-wrong-ink: #4a1a0e;
+  --sb-pending: #8e94d6;
+  --sb-pending-ink: #1d2050;
+  --sb-frozen: #6f76c4;
+  --sb-ink: #ffffff;
+  --sb-me: #f7ebbd;
+  --medal-gold: #e9c86b;
+  --medal-silver: #cfccc2;
+  --medal-bronze: #d39b6c;
+  /* DOMjudge chrome */
+  --nav-bg: #1f1e1d;
+  --nav-fg: #e8e6dc;
+  --nav-muted: #a9a69a;
+  --section: #f1e2d6;
+  --section-fg: #3d2b20;
+  --btn-submit: #4f7a3a;
+  --btn-info: #5e7b99;
+  --btn-warn: #c98a2b;
+  --row-hover: rgba(217, 119, 87, 0.08);
+
+  --serif: "Tiempos Text", "Source Han Serif SC", "Noto Serif SC", "Songti SC", Georgia, "Times New Roman", serif;
+  --mono: "Cascadia Mono", "JetBrains Mono", Consolas, "Courier New", monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --app: #262624;
+    --panel: #1f1e1d;
+    --surface: #30302e;
+    --raised: #2b2b29;
+    --border: #3e3e38;
+    --divider: #383833;
+    --text: #faf9f5;
+    --text2: #d6d4ca;
+    --text3: #9c9a92;
+    --accent-soft: #4a3128;
+    --ok: #a9d38f;
+    --ok-bg: #2e3d26;
+    --bad: #f0a08a;
+    --bad-bg: #4a2a22;
+    --ce: #cdb1e6;
+    --ce-bg: #3a2f44;
+    --pend: #ecc979;
+    --pend-bg: #45391f;
+    --sb-solved: #4f7d42;
+    --sb-solved-ink: #eaf5e3;
+    --sb-first: #2b5f27;
+    --sb-first-ink: #ffffff;
+    --sb-wrong: #8f4535;
+    --sb-wrong-ink: #fde4dc;
+    --sb-pending: #4f5596;
+    --sb-pending-ink: #e7e8fb;
+    --sb-frozen: #5c63b0;
+    --sb-me: #4a4126;
+    --medal-gold: #a8862c;
+    --medal-silver: #807d74;
+    --medal-bronze: #8c5e38;
+    --nav-bg: #191817;
+    --section: #3d2e25;
+    --section-fg: #f3dccd;
+    --row-hover: rgba(217, 119, 87, 0.1);
+  }
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  background: var(--app);
+  color: var(--text);
+}
+body {
+  font-family: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+a {
+  color: inherit;
+}
+.serif {
+  font-family: var(--serif);
+}
+.mono {
+  font-family: var(--mono);
+}
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+.muted {
+  color: var(--text3);
+}
+.page {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 20px 16px 48px;
+  box-sizing: border-box;
+}
+.page.wide {
+  max-width: none;
+}
+h1.page-title {
+  font-family: var(--serif);
+  font-weight: 500;
+  font-size: 26px;
+  margin: 4px 0 16px;
+}
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px 18px;
+}
+pre.code {
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.55;
+  background: var(--raised);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin: 0;
+  overflow: auto;
+  white-space: pre;
+}
+.verdict {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 6px;
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.verdict.ok {
+  color: var(--ok);
+  background: var(--ok-bg);
+}
+.verdict.bad {
+  color: var(--bad);
+  background: var(--bad-bg);
+}
+.verdict.ce,
+.verdict.se {
+  color: var(--ce);
+  background: var(--ce-bg);
+}
+.verdict.pending,
+.verdict.info {
+  color: var(--pend);
+  background: var(--pend-bg);
+}
+.dot {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  vertical-align: -2px;
+}
+@media print {
+  .no-print {
+    display: none !important;
+  }
+}
+
+/* ---- DOMjudge-style building blocks ---- */
+.dj-container {
+  padding: 16px 20px 40px;
+  box-sizing: border-box;
+}
+.dj-section {
+  background: var(--section);
+  color: var(--section-fg);
+  text-align: center;
+  font-weight: 600;
+  padding: 5px 8px;
+  border-radius: 4px 4px 0 0;
+  font-size: 14px;
+}
+table.dj {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13.5px;
+}
+table.dj th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--text2);
+  padding: 6px 8px;
+  border-bottom: 2px solid var(--divider);
+  white-space: nowrap;
+}
+table.dj td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--divider);
+  vertical-align: top;
+}
+table.dj tbody tr:nth-child(odd) td {
+  background: var(--raised);
+}
+table.dj tbody tr.link {
+  cursor: pointer;
+}
+table.dj tbody tr.link:hover td {
+  background: var(--row-hover);
+}
+table.dj tr.unseen td {
+  font-weight: 700;
+}
+table.dj tr.ignored td {
+  text-decoration: line-through;
+  opacity: 0.6;
+}
+.pbadge {
+  display: inline-block;
+  min-width: 22px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  text-align: center;
+  font-weight: 700;
+  font-size: 12.5px;
+  background: var(--accent-soft);
+  color: var(--text);
+  border: 1px solid rgba(0, 0, 0, 0.18);
+  box-sizing: border-box;
+}
+.sol {
+  font-variant: small-caps;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  font-size: 13px;
+}
+.sol.correct {
+  color: var(--ok);
+}
+.sol.incorrect {
+  color: var(--bad);
+}
+.sol.queued,
+.sol.late {
+  color: var(--text3);
+}
+.sol.ce {
+  color: var(--ce);
+}
+.langid {
+  font-variant: small-caps;
+  font-size: 12px;
+  color: var(--text2);
+}
+.dj-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.dj-card-header {
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  border-radius: 6px 6px 0 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}

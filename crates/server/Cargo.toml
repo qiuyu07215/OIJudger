@@ -1,0 +1,28 @@
+[package]
+name = "server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "OIJudger online contest web server (LAN): contestant, scoreboard, jury, balloon and print pages"
+
+[dependencies]
+online.workspace = true
+judge-core.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+parking_lot.workspace = true
+blake3.workspace = true
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "matched-path"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+tower-http = { version = "0.6", features = ["compression-gzip", "limit", "set-header"] }
+rust-embed = { version = "8", features = ["interpolate-folder-path"] }
+mime_guess = "2"
+futures-util = { version = "0.3", default-features = false }
+
+[dev-dependencies]
+sandbox.workspace = true
+tempfile.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["json", "cookies"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

@@ -32,6 +32,9 @@ pub struct Settings {
     pub cache_limit_mb: u64,
     /// Raise the stack reserve of contestant programs to the memory limit.
     pub patch_stack: bool,
+    /// Stop at the first case that is not fully accepted (ICPC); the rest
+    /// are reported as skipped.
+    pub stop_on_failure: bool,
     pub output_limit_mb: u64,
     pub build: BuildLimits,
     pub checker: CheckerLimits,
@@ -48,6 +51,7 @@ impl Default for Settings {
             overlap_compile: true,
             cache_limit_mb: DEFAULT_CACHE_LIMIT_MB,
             patch_stack: true,
+            stop_on_failure: false,
             output_limit_mb: 256,
             build: BuildLimits::default(),
             checker: CheckerLimits::default(),
@@ -249,6 +253,7 @@ fn judge_inner(
     let mut effective: Vec<f64> = Vec::with_capacity(problem.subtasks.len());
     let mut subtasks = Vec::with_capacity(problem.subtasks.len());
     let mut time_ms = 0u64;
+    let mut stopped = false;
     for (si, st) in problem.subtasks.iter().enumerate() {
         let dep = st.depends.iter().filter_map(|&d| effective.get(d - 1)).fold(1.0f64, |a, &b| a.min(b));
         let mut own = if st.cases.is_empty() { 0.0 } else { 1.0f64 };
@@ -261,7 +266,11 @@ fn judge_inner(
                 cases.push(case_result(case, Verdict::Skipped, 0.0, "Dependency failed"));
                 continue;
             }
-            if own <= 0.0 {
+            if own <= 0.0 || stopped {
+                if stopped {
+                    // Not run because an earlier case failed (ICPC): no points.
+                    own = 0.0;
+                }
                 cases.push(case_result(case, Verdict::Skipped, 0.0, ""));
                 continue;
             }
@@ -273,6 +282,7 @@ fn judge_inner(
             }
             .unwrap_or_else(|e| case_result(case, Verdict::SystemError, 0.0, format!("{e:#}")));
             own = own.min(r.ratio);
+            stopped |= ctx.settings.stop_on_failure && r.ratio < 1.0;
             time_ms += r.time_ms;
             on_case(si, &r);
             cases.push(r);
@@ -753,5 +763,38 @@ impl Drop for ExeGrant<'_> {
     fn drop(&mut self) {
         let _g = EXE_ACL_LOCK.lock();
         let _ = self.worker.container().revoke(&self.exe);
+    }
+}
+
+/// Only compile a task's program (OI contests with compile-check feedback).
+/// `Judged` with score 0 means it compiled; `CompileError` carries the log.
+pub fn compile_check(ctx: &JudgeContext, worker: &Worker, contestant: &str, problem: &Problem) -> ProblemResult {
+    let full = problem.full_score();
+    let out = |status, msg: String| ProblemResult::empty(contestant, &problem.name, full, status, msg);
+    if problem.kind == ProblemKind::Answer {
+        return out(Status::Judged, String::new());
+    }
+    if is_multi_program(problem) {
+        return match prepare_multi(ctx, worker, contestant, problem) {
+            Ok(Prepared::Ready(_, log)) => out(Status::Judged, log),
+            Ok(Prepared::Missing(m)) => out(Status::NoSource, m),
+            Ok(Prepared::CompileError(m)) => out(Status::CompileError, m),
+            Ok(Prepared::Config(m)) => out(Status::SystemError, m),
+            Err(e) => out(Status::SystemError, format!("{e:#}")),
+        };
+    }
+    let req = match build_request(ctx, contestant, problem) {
+        Ok(Some(Ok(r))) => r,
+        Ok(Some(Err(m))) => return out(Status::SystemError, m),
+        Ok(None) => return out(Status::NoSource, "Source file not found".into()),
+        Err(e) => return out(Status::SystemError, format!("{e:#}")),
+    };
+    let Some((_, version)) = ctx.tools.get(req.compiler.lang) else {
+        return out(Status::SystemError, "No compiler".into());
+    };
+    match build(worker, &req, version, &ctx.dir.build_cache(), &ctx.settings.build) {
+        Ok(BuildOutput::Ok { log, .. }) => out(Status::Judged, log.trim().to_string()),
+        Ok(BuildOutput::Failed { log }) => out(Status::CompileError, log),
+        Err(e) => out(Status::SystemError, format!("{e:#}")),
     }
 }

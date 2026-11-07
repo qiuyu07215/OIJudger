@@ -5,7 +5,7 @@
 ## 1. 现状
 
 - 仓库：<https://github.com/qiuyu07215/OIJudger>（公开，MIT 许可），主分支 `master`。
-- 最新版本：**v0.1.1**（Releases 页提供普通版与带编译器的便携版两个压缩包）。
+- 最新版本：**v0.2.0**（新增在线比赛）（Releases 页提供普通版与带编译器的便携版两个压缩包）。
   - v0.1.0 的标签指向的提交与发布文件不完全对应：发布文件后来换成了 MSVC 构建，但标签没有移动。v0.1.1 的标签与发布文件一致。
 - 平台：只支持 Windows 10/11 x64。沙箱接口已为以后的 Linux 后端预留，但尚未实现。
 - 功能已全部实现：
@@ -27,10 +27,13 @@ crates/
   analysis/             统计指标、代码查重（winnowing）
   export/               CSV / XLSX / HTML 导出
   lemon-import/         LemonLime .cdf（JSON）→ contest.toml
+  online/               在线比赛：时钟、SQLite（.oij/online.db）、三种赛制计分、封榜 / 滚榜、协调评测
+  server/               在线比赛网页服务（axum）：认证、REST API、SSE 推送；嵌入 app/web/dist
   cli/                  命令行（crate 名 oij，可执行文件 oijudger-cli），自检、端到端测试
 app/
   src-tauri/            Tauri v2 主程序 OIJudger.exe；带参数启动时走命令行模式
-  ui/                   Vue 3 + TypeScript + Naive UI + ECharts + vue-i18n
+  ui/                   桌面界面：Vue 3 + TypeScript + Naive UI + ECharts + vue-i18n
+  web/                  在线比赛网页：Vue 3 + Naive UI + vue-router + markdown-it/KaTeX；页面结构同 DOMjudge
 assets/testlib/         testlib.h（编译进程序，评测时写入 .oij/testlib.h）
 tests/sandbox-escape/   沙箱逃逸测试用的 C++ 程序
 examples/demo-contest/  演示比赛 + expected.json（由 scripts/make_demo.py 生成）
@@ -110,7 +113,7 @@ cargo build --release -p oijudger -p oij --features oijudger/custom-protocol
 ## 5. 发布流程
 
 1. 改版本号（四处）：`Cargo.toml`、`app/src-tauri/tauri.conf.json`、`app/ui/package.json`、`app/ui/package-lock.json`（两处）。
-2. `npm run build`（app/ui），然后用 MSVC 执行上面的 `cargo build --release ...`。
+2. 分别在 app/ui 和 app/web 中运行 `npm run build`（服务端在编译时嵌入 app/web/dist），然后用 MSVC 执行上面的 `cargo build --release ...`。
 3. 运行测试，并跑一次 `oijudger-cli selftest`。
 4. `python scripts/package.py <CARGO_TARGET_DIR> [MinGW 目录，默认 C:\mingw64]`，在 `dist/` 生成两个压缩包：
    - 便携版带上整个 MinGW（`opt/` 除外），其许可证在 `mingw64/licenses/`。
@@ -219,6 +222,41 @@ cargo build --release -p oijudger -p oij --features oijudger/custom-protocol
 - 文件操作偶尔会被 Defender 或刚退出的进程短暂占用，所以用 `retry_io` 重试；旧临时目录在后台线程删除。
 - 统一使用 LF 换行（`.gitattributes`）。用脚本批量改文件时注意不要写入 CRLF。
 
+## 6.5 在线比赛（crates/online、crates/server、app/web）
+
+**组成**
+- `judge-core/src/service.rs` 的 `JudgeService` 是常驻评测服务：沙箱工作区只建一次，提交进入队列。
+  - 公平排队：优先评测没有其他提交在评测或排队的选手，与 DOMjudge 相同。
+  - 空闲核心上的编译线程会预编译排队中的提交。
+  - 每份提交存为 `.oij/submissions/<id>/<用户名>/<题>/<文件>`；评测时把 `ContestDir::source_root` 指向这个目录，`judge_problem`、编译缓存、沙箱全部原样复用。
+- `online/src/contest.rs` 的 `OnlineContest` 负责：
+  - 校验并接收提交（比赛时间、间隔、大小、语言）；比赛结束后的提交记为 `TOO-LATE`，不评测。
+  - 把评测结果写入数据库，生成气球。
+  - 把提交写回 `source/`：ICPC / OI 写最后一次，IOI 写最高分。
+  - 生成各种榜单：公开、选手本队行、评委；处理封榜、OI 赛后评测与公布、账号、答疑、打印。
+  - 状态变化通过 `Notice` 通知，服务端经 SSE 推给浏览器，浏览器收到后重新拉取数据。
+- `online/src/scoring.rs` 是纯函数，便于测试：ICPC 计分（罚时，待定之后的提交也视为待定，首个通过）、IOI 两种取分、OI 分数榜、滚榜步骤。
+- **server**：
+  - 角色由提取器检查：`User`、`Jury`、`Admin`、`Staff`。
+  - 写操作必须带 `X-Requested-With: oij`（防 CSRF）；Cookie 为 HttpOnly + SameSite=Strict。
+  - 停止服务时先结束 SSE 流，否则优雅关闭会一直等待浏览器连接。
+- **app/web**：
+  - 页面结构与交互逻辑按 DOMjudge 重写（未使用 DOMjudge 的 GPL 代码），颜色沿用本程序配色，榜单颜色含义不变：绿 = 通过，深绿 = 首个通过，红 = 未通过，蓝 = 待定。
+  - 选手页面在 `/team/*`，评委页面在 `/jury/*`。
+- **桌面**：`app/src-tauri/src/online.rs` 在 Tauri 的运行时上启动服务；“打开评委界面”用一次性登录链接（`/api/token-login`）在应用内新窗口打开评委页面。
+
+**开发方式**：先运行 `oijudger-cli serve <比赛> --bind 127.0.0.1:8080`，再启动 `.claude/launch.json` 里的 `web-dev`（Vite 5174 端口，`/api` 转发到 8080）。
+
+**测试**：
+- `crates/online/tests/rules.rs`：太迟、忽略、本队行、重测筛选、题目统计。
+- `crates/online/tests/online_demo.rs`：用演示比赛真实评测三种赛制。
+- `crates/server/tests/http.rs`：真实 HTTP 服务，覆盖登录、CSRF、越权、文件访问限制、SSE、账号导入。
+
+**坑**
+- 同一进程里可能同时有两个工作区（在线评测服务 + 赛后离线评测），所以工作区目录和沙箱身份名都带实例编号（`<pid>-<n>`）。
+- ICPC 提前停止时，被跳过的子任务记 0 分。
+- Naive UI 的对话框卡片自身带 `n-modal` 类，在页面里查找元素时注意。
+
 ## 7. 运行时数据位置
 
 | 位置 | 内容 |
@@ -228,8 +266,17 @@ cargo build --release -p oijudger -p oij --features oijudger/custom-protocol
 | `%LOCALAPPDATA%\OIJudger\pch\` | 预编译头 |
 | `<比赛目录>\.oij\results.db` | 评测结果（SQLite，WAL，每个（选手, 试题）一行，详情为 JSON） |
 | `<比赛目录>\.oij\build\` | 编译缓存（exe、编译日志、失败记录） |
+| `<比赛目录>\.oij\online.db` | 在线比赛：账号、会话、提交、评测、答疑、气球、打印、日志 |
+| `<比赛目录>\.oij\submissions\` | 在线提交的源代码存档 |
 
 ## 8. 已知限制与可做的事
+
+- **在线比赛**：
+  - 只支持单机评测，没有 DOMjudge 那样的多台评测机。
+  - 只提供 HTTP，适合局域网，不建议直接暴露到公网。
+  - 提交答案题和通信题不能在线提交。
+  - 压力测试只做了 4 支队伍的功能演练，200 人规模的并发还没有实测。
+  - 桌面程序的“在线比赛”面板只在浏览器预览中检查过界面，启动服务与命令行 `serve` 共用同一套代码。
 
 - **Linux 后端**：未实现。计划用 namespace + seccomp + cgroup 实现同一套沙箱接口。
 - **超大规模**：没在 2 万份代码级别实测过。按基准推算，在 6 核机器上约需两小时，瓶颈是 gcc 本身和每个程序一次的 Defender 扫描。可做的方向：

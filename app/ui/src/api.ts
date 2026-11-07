@@ -210,6 +210,10 @@ export const api = {
   closeContest: () => invoke<void>("close_contest"),
   cacheUsage: () => invoke<{ files: number; bytes: number }>("cache_usage"),
   clearCache: () => invoke<{ files: number; bytes: number }>("clear_cache"),
+  onlineStatus: () => invoke<OnlineView>("online_status"),
+  onlineStart: (bind: string) => invoke<OnlineView>("online_start", { bind }),
+  onlineStop: () => invoke<void>("online_stop"),
+  onlineOpenJury: () => invoke<void>("online_open_jury"),
   saveContestConfig: (contest: Contest) => invoke<ContestView>("save_contest_config", { contest }),
   detectProblems: (timeMs: number, memoryMb: number) =>
     invoke<Problem[]>("detect_problems", { timeMs, memoryMb }),
@@ -240,4 +244,19 @@ export function fullScore(p: Problem): number {
 
 export function caseCount(p: Problem): number {
   return p.subtask.reduce((s, t) => s + t.cases.length, 0);
+}
+
+export interface OnlineView {
+  running: boolean;
+  addr: string;
+  urls: string[];
+  local_url: string;
+  bind: string;
+  judging: boolean;
+  judging_error: string | null;
+  admin_password: string | null;
+  queued: number;
+  running_jobs: number;
+  online: number;
+  format: string;
 }
