@@ -1,41 +1,75 @@
+/* Claude-style warm palette. Score cells keep semantic hues, tuned warm. */
 :root {
-  --cell-full: #d9f2dd;
-  --cell-full-fg: #17602a;
-  --cell-zero: #fbe0dd;
-  --cell-zero-fg: #8e1d12;
+  color-scheme: light;
+  --app: #f5f4ed;
+  --panel: #efede4;
+  --surface: #ffffff;
+  --border: #e3e0d5;
+  --divider: #e8e6dc;
+  --text: #141413;
+  --text2: #3d3d3a;
+  --text3: #73726c;
+  --accent: #d97757;
+  --accent-soft: #f6e6dd;
+
+  --cell-full: #e2ead7;
+  --cell-full-fg: #3c6a28;
+  --cell-zero: #f6ddd3;
+  --cell-zero-fg: #9e3b26;
   --cell-missing: transparent;
-  --cell-missing-fg: #9aa0a6;
-  --cell-ce: #ece3f8;
-  --cell-ce-fg: #5b2a91;
-  --cell-se: #fff1c2;
-  --cell-se-fg: #7a5600;
-  --partial-l: 30%;
-  --partial-a: 0.22;
+  --cell-missing-fg: #a6a397;
+  --cell-ce: #ebe3ef;
+  --cell-ce-fg: #6b4a86;
+  --cell-se: #f6ead0;
+  --cell-se-fg: #85601a;
+  --partial-l: 32%;
+  --partial-a: 0.2;
+
+  --serif: "Tiempos Text", "Source Han Serif SC", "Noto Serif SC", "Songti SC", Georgia, "Times New Roman", serif;
   --mono: "Cascadia Mono", "JetBrains Mono", Consolas, "Courier New", monospace;
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --cell-full: #1d3b25;
-    --cell-full-fg: #8be39f;
-    --cell-zero: #43211d;
-    --cell-zero-fg: #ff9c8f;
-    --cell-missing-fg: #6b7177;
-    --cell-ce: #33264a;
-    --cell-ce-fg: #c9a7f5;
-    --cell-se: #3d3216;
-    --cell-se-fg: #f1cf6b;
-    --partial-l: 74%;
-    --partial-a: 0.26;
+    color-scheme: dark;
+    --app: #262624;
+    --panel: #1f1e1d;
+    --surface: #30302e;
+    --border: #3e3e38;
+    --divider: #383833;
+    --text: #faf9f5;
+    --text2: #d6d4ca;
+    --text3: #9c9a92;
+    --accent: #d97757;
+    --accent-soft: #4a3128;
+
+    --cell-full: #2e3d26;
+    --cell-full-fg: #a9d38f;
+    --cell-zero: #4a2a22;
+    --cell-zero-fg: #f0a08a;
+    --cell-missing-fg: #6f6d66;
+    --cell-ce: #3a2f44;
+    --cell-ce-fg: #cdb1e6;
+    --cell-se: #45391f;
+    --cell-se-fg: #ecc979;
+    --partial-l: 76%;
+    --partial-a: 0.24;
   }
 }
-html, body, #app {
+html,
+body,
+#app {
   margin: 0;
   height: 100%;
   overflow: hidden;
+  background: var(--app);
+  color: var(--text);
 }
 body {
-  font-family: "Segoe UI", "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif;
+  font-family: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
+}
+.serif {
+  font-family: var(--serif);
 }
 .mono {
   font-family: var(--mono);
@@ -43,42 +77,53 @@ body {
 pre.code {
   font-family: var(--mono);
   font-size: 12.5px;
-  line-height: 1.5;
+  line-height: 1.55;
   margin: 0;
   padding: 10px 12px;
-  border-radius: 6px;
+  border-radius: 8px;
   overflow: auto;
   white-space: pre;
-  background: rgba(127, 127, 127, 0.08);
+  background: var(--panel);
+  border: 1px solid var(--divider);
 }
 .score-cell {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 4px;
-  height: 26px;
-  margin: -6px -8px;
+  height: 24px;
+  margin: -5px -8px;
   padding: 0 8px;
-  border-radius: 4px;
+  border-radius: 6px;
   cursor: pointer;
   font-variant-numeric: tabular-nums;
   user-select: none;
 }
 .score-cell:hover {
-  outline: 2px solid rgba(64, 128, 255, 0.45);
+  outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
 }
 .score-cell .label {
   font-size: 11px;
-  opacity: 0.75;
+  opacity: 0.8;
 }
 .score-cell.stale::after {
   content: "";
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #e69500;
+  background: var(--accent);
   margin-left: 2px;
 }
 .tabular {
   font-variant-numeric: tabular-nums;
+}
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--text3) 35%, transparent);
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
 }

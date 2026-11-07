@@ -80,6 +80,7 @@ export interface CellView {
   label: string;
   status: Status;
   time_ms: number;
+  judged_at: number;
   stale: boolean;
 }
 
@@ -123,8 +124,22 @@ export interface WorkerView {
   cases_done: number;
 }
 
+export interface LogLine {
+  contestant: string;
+  problem: string;
+  subtask: number;
+  input: string;
+  verdict: string;
+  time_ms: number;
+  memory_kb: number;
+  score: [number, number] | null;
+  message: string;
+}
+
 export interface ProgressView {
   running: boolean;
+  compile_done: number;
+  compile_total: number;
   total: number;
   done: number;
   workers: (WorkerView | null)[];
@@ -132,6 +147,7 @@ export interface ProgressView {
   elapsed_ms: number;
   updates: CellView[];
   messages: string[];
+  log: LogLine[];
   error: string | null;
 }
 

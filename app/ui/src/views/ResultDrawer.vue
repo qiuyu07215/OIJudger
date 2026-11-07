@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, h, ref, watch } from "vue";
-import { NDrawer, NDrawerContent, NTabs, NTabPane, NDataTable, NTag, NButton, NEmpty, NSpace, NStatistic, useMessage, type DataTableColumns } from "naive-ui";
+import { NDrawer, NDrawerContent, NTabs, NTab, NTabPane, NDataTable, NTag, NButton, NEmpty, NSpace, NStatistic, useMessage, type DataTableColumns } from "naive-ui";
 import { useI18n } from "vue-i18n";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { api, fmtScore, type ProblemResult, type SourceFile, type Verdict } from "../api";
 import { state, judging, getCell } from "../store";
+import { judgePairs } from "../actions";
 
 const props = defineProps<{ target: { contestant: string; problem: string } | null }>();
 const emit = defineEmits<{ close: [] }>();
@@ -14,24 +15,36 @@ const result = ref<ProblemResult | null>(null);
 const sources = ref<SourceFile[]>([]);
 const loading = ref(false);
 const tab = ref("cases");
+/** Problem shown; the drawer can switch between all of a contestant's problems. */
+const cur = ref("");
 
-const problem = computed(() => state.contest?.problem.find((p) => p.name === props.target?.problem));
+const problem = computed(() => state.contest?.problem.find((p) => p.name === cur.value));
+
+watch(
+  () => props.target,
+  (tg) => {
+    if (tg) cur.value = tg.problem || state.contest?.problem[0]?.name || "";
+  },
+  { immediate: true },
+);
 
 async function load() {
-  if (!props.target) return;
+  if (!props.target || !cur.value) return;
   loading.value = true;
   try {
-    const { contestant, problem } = props.target;
+    const contestant = props.target.contestant;
+    const problem = cur.value;
+    tab.value = "cases";
     [result.value, sources.value] = await Promise.all([api.getResult(contestant, problem), api.readSource(contestant, problem)]);
     if (result.value && result.value.status !== "Judged") tab.value = result.value.status === "CompileError" ? "compile" : "cases";
   } finally {
     loading.value = false;
   }
 }
-watch(() => props.target, load, { immediate: true });
+watch([() => props.target, cur], load, { immediate: true });
 // Refresh when this cell is re-judged.
 watch(
-  () => (props.target ? getCell(props.target.contestant, props.target.problem) : undefined),
+  () => (props.target ? getCell(props.target.contestant, cur.value) : undefined),
   (c, old) => {
     if (c && old && c !== old) load();
   },
@@ -91,8 +104,13 @@ const columns = computed<DataTableColumns<CaseRow>>(() => [
 ]);
 
 function rejudge() {
-  if (!props.target) return;
-  api.startJudge({ pairs: [[props.target.contestant, props.target.problem]] }).catch((e) => message.error(String(e)));
+  if (props.target) judgePairs([[props.target.contestant, cur.value]], message);
+}
+
+function cellLabel(name: string) {
+  const c = props.target ? getCell(props.target.contestant, name) : undefined;
+  if (!c) return "–";
+  return c.status === "Judged" ? fmtScore(c.score) : t(`verdict.${c.label}`, c.label);
 }
 
 function openSourceDir() {
@@ -106,9 +124,14 @@ function openSourceDir() {
     <n-drawer-content v-if="target" closable :native-scrollbar="false">
       <template #header>
         <div style="display: flex; align-items: center; gap: 12px">
-          <span>{{ target.contestant }} · {{ problem?.title || target.problem }}</span>
+          <span class="serif" style="font-size: 18px">{{ target.contestant }}</span>
         </div>
       </template>
+      <n-tabs v-model:value="cur" type="card" size="small" style="margin-bottom: 12px">
+        <n-tab v-for="p in state.contest?.problem ?? []" :key="p.name" :name="p.name">
+          {{ p.title || p.name }} <span class="tabular" style="margin-left: 6px; color: var(--text3)">{{ cellLabel(p.name) }}</span>
+        </n-tab>
+      </n-tabs>
       <n-space align="center" justify="space-between" style="margin-bottom: 12px">
         <n-space align="center" :size="28">
           <n-statistic :label="t('detail.score')">

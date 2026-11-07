@@ -2,9 +2,10 @@
 import { computed, h, ref, watch } from "vue";
 import {
   NButton, NButtonGroup, NInput, NInputNumber, NSelect, NSwitch, NForm, NFormItem, NGrid, NFormItemGi, NDataTable,
-  NEmpty, NSpace, NDivider, NModal, NCard, NTag, NPopconfirm, NScrollbar, NCheckbox, useMessage,
-  type DataTableColumns,
+  NEmpty, NSpace, NDivider, NModal, NCard, NTag, NPopconfirm, NScrollbar, NCheckbox, NTree, NIcon, NTooltip, useMessage,
+  type DataTableColumns, type TreeOption,
 } from "naive-ui";
+import { Wand, Plus, ArrowUp, ArrowDown, Trash, FilePlus } from "@vicons/tabler";
 import { useI18n } from "vue-i18n";
 import { api, fmtScore, fullScore, caseCount, type Contest, type Problem, type Subtask } from "../api";
 import { state, saveContest, judging } from "../store";
@@ -17,6 +18,8 @@ const current = ref(0);
 const checked = ref<number[]>([]);
 const expanded = ref<number[]>([]);
 const saving = ref(false);
+/** What the tree has selected: the contest, a problem, or one test point. */
+const sel = ref<{ kind: "contest" } | { kind: "problem" } | { kind: "subtask"; s: number }>({ kind: "problem" });
 
 const clone = <T,>(x: T): T => JSON.parse(JSON.stringify(x));
 watch(() => state.contest, (c) => { if (c) { draft.value = clone(c); current.value = Math.min(current.value, Math.max(0, c.problem.length - 1)); } }, { immediate: true });
@@ -40,6 +43,81 @@ function revert() {
   if (state.contest) draft.value = clone(state.contest);
 }
 
+defineExpose({ detect });
+
+const sub = computed<Subtask | undefined>(() => (sel.value.kind === "subtask" ? prob.value?.subtask[sel.value.s] : undefined));
+
+// ---- tree ------------------------------------------------------------------------
+const treeData = computed<TreeOption[]>(() => [
+  {
+    key: "contest",
+    label: draft.value?.title || t("problems.contest"),
+    prefix: () => h("span", { class: "tree-badge" }, t("problems.contestShort")),
+    children: (draft.value?.problem ?? []).map((p, i) => ({
+      key: `p:${i}`,
+      label: p.title || p.name,
+      suffix: () => h("span", { class: "tree-meta" }, `${fmtScore(fullScore(p))}`),
+      children: p.subtask.map((st, j) => ({
+        key: `s:${i}:${j}`,
+        label: `${t("problems.point", { n: j + 1 })}`,
+        suffix: () => h("span", { class: "tree-meta" }, `${fmtScore(st.score)} · ${st.cases.length}`),
+      })),
+    })),
+  },
+]);
+const selectedKeys = computed(() => [
+  sel.value.kind === "contest" ? "contest" : sel.value.kind === "problem" ? `p:${current.value}` : `s:${current.value}:${sel.value.s}`,
+]);
+const expandedKeys = ref<string[]>(["contest", "p:0"]);
+function onSelect(keys: string[]) {
+  const k = keys[0];
+  if (!k) return;
+  if (k === "contest") sel.value = { kind: "contest" };
+  else if (k.startsWith("p:")) {
+    current.value = Number(k.slice(2));
+    sel.value = { kind: "problem" };
+  } else {
+    const [, pi, si] = k.split(":");
+    current.value = Number(pi);
+    sel.value = { kind: "subtask", s: Number(si) };
+  }
+  if (!expandedKeys.value.includes(`p:${current.value}`)) expandedKeys.value = [...expandedKeys.value, `p:${current.value}`];
+}
+
+function addSubtaskSelected() {
+  if (!prob.value) return;
+  addSubtask();
+  sel.value = { kind: "subtask", s: prob.value.subtask.length - 1 };
+  if (!expandedKeys.value.includes(`p:${current.value}`)) expandedKeys.value = [...expandedKeys.value, `p:${current.value}`];
+}
+
+function moveSelected(d: number) {
+  if (sel.value.kind === "subtask") {
+    const j = sel.value.s + d;
+    if (!prob.value || j < 0 || j >= prob.value.subtask.length) return;
+    moveSubtask(sel.value.s, d);
+    sel.value = { kind: "subtask", s: j };
+  } else if (sel.value.kind === "problem") moveProblem(d);
+}
+
+function removeSelected() {
+  if (sel.value.kind === "subtask") {
+    prob.value?.subtask.splice(sel.value.s, 1);
+    for (const st of prob.value?.subtask ?? []) st.depends = undefined;
+    sel.value = { kind: "problem" };
+  } else if (sel.value.kind === "problem") removeProblem();
+}
+
+const subDepends = computed({
+  get: () => (sub.value?.depends ?? []).join(","),
+  set: (v: string) => {
+    if (!sub.value || sel.value.kind !== "subtask") return;
+    const max = sel.value.s;
+    const d = v.split(/[,，\s]+/).map(Number).filter((x) => Number.isInteger(x) && x >= 1 && x <= max);
+    sub.value.depends = d.length ? d : undefined;
+  },
+});
+
 async function detect() {
   if (!draft.value) return;
   const found = await api.detectProblems(1000, 512);
@@ -62,6 +140,7 @@ function newProblem(): Problem {
 function addProblem() {
   draft.value?.problem.push(newProblem());
   current.value = (draft.value?.problem.length ?? 1) - 1;
+  sel.value = { kind: "problem" };
 }
 
 function removeProblem() {
@@ -279,22 +358,30 @@ function applyPattern() {
 <template>
   <div v-if="draft" class="wrap">
     <div class="side">
-      <n-space vertical :size="8" style="padding: 12px">
-        <n-button block secondary :title="t('problems.detectHint')" @click="detect">{{ t("problems.detect") }}</n-button>
-        <n-button-group style="width: 100%">
-          <n-button style="flex: 1" @click="addProblem">＋ {{ t("problems.add") }}</n-button>
-          <n-button :disabled="!prob" @click="moveProblem(-1)">↑</n-button>
-          <n-button :disabled="!prob" @click="moveProblem(1)">↓</n-button>
-        </n-button-group>
-      </n-space>
+      <div class="treebar">
+        <n-tooltip><template #trigger><n-button size="tiny" quaternary @click="detect"><template #icon><n-icon><Wand /></n-icon></template></n-button></template>{{ t("problems.detect") }}</n-tooltip>
+        <n-tooltip><template #trigger><n-button size="tiny" quaternary @click="addProblem"><template #icon><n-icon><Plus /></n-icon></template></n-button></template>{{ t("problems.add") }}</n-tooltip>
+        <n-tooltip><template #trigger><n-button size="tiny" quaternary :disabled="!prob" @click="addSubtaskSelected"><template #icon><n-icon><FilePlus /></n-icon></template></n-button></template>{{ t("problems.addSubtask") }}</n-tooltip>
+        <n-tooltip><template #trigger><n-button size="tiny" quaternary :disabled="sel.kind === 'contest'" @click="moveSelected(-1)"><template #icon><n-icon><ArrowUp /></n-icon></template></n-button></template>{{ t("common.up") }}</n-tooltip>
+        <n-tooltip><template #trigger><n-button size="tiny" quaternary :disabled="sel.kind === 'contest'" @click="moveSelected(1)"><template #icon><n-icon><ArrowDown /></n-icon></template></n-button></template>{{ t("common.down") }}</n-tooltip>
+        <n-popconfirm @positive-click="removeSelected">
+          <template #trigger><n-button size="tiny" quaternary :disabled="sel.kind === 'contest'"><template #icon><n-icon><Trash /></n-icon></template></n-button></template>
+          {{ sel.kind === "subtask" ? t("problems.removePoint") : t("problems.removeConfirm", { name: prob?.name ?? "" }) }}
+        </n-popconfirm>
+      </div>
       <n-scrollbar style="flex: 1">
-        <div v-for="(p, i) in draft.problem" :key="i" class="item" :class="{ active: i === current }" @click="current = i">
-          <div style="font-weight: 600">{{ p.title || p.name }}</div>
-          <div class="sub">{{ t(`kind.${p.kind}`) }} · {{ fmtScore(fullScore(p)) }} · {{ t("problems.cases", { n: caseCount(p) }) }}</div>
-        </div>
+        <n-tree
+          block-line
+          :data="treeData"
+          :selected-keys="selectedKeys"
+          v-model:expanded-keys="expandedKeys"
+          :cancelable="false"
+          style="padding: 4px 6px"
+          @update:selected-keys="onSelect"
+        />
       </n-scrollbar>
       <div class="savebar">
-        <div v-if="dirty" style="font-size: 12px; color: #e69500; margin-bottom: 6px">● {{ t("common.unsaved") }}</div>
+        <div v-if="dirty" style="font-size: 12px; color: var(--accent); margin-bottom: 6px">● {{ t("common.unsaved") }}</div>
         <n-space :size="8">
           <n-button type="primary" :disabled="!dirty || judging" :loading="saving" @click="save">{{ t("common.save") }}</n-button>
           <n-button :disabled="!dirty" @click="revert">{{ t("common.revert") }}</n-button>
@@ -303,8 +390,41 @@ function applyPattern() {
     </div>
 
     <n-scrollbar style="flex: 1">
-      <n-empty v-if="!prob" :description="t('problems.none')" style="margin-top: 100px" />
+      <div v-if="sel.kind === 'contest'" class="editor">
+        <h2 class="serif heading">{{ t("problems.contest") }}</h2>
+        <n-form label-placement="top" size="small" :show-feedback="false" style="max-width: 520px">
+          <n-form-item :label="t('problems.contestTitle')"><n-input v-model:value="draft.title" /></n-form-item>
+        </n-form>
+        <div class="summary">
+          <div><b class="tabular">{{ draft.problem.length }}</b> {{ t("problems.problemsUnit") }}</div>
+          <div><b class="tabular">{{ fmtScore(draft.problem.reduce((a, p) => a + fullScore(p), 0)) }}</b> {{ t("problems.pointsUnit") }}</div>
+          <div><b class="tabular">{{ state.contestants.length }}</b> {{ t("problems.contestantsUnit") }}</div>
+        </div>
+        <div class="hint">{{ t("problems.contestHint") }}</div>
+      </div>
+      <n-empty v-else-if="!prob" :description="t('problems.none')" style="margin-top: 100px" />
+      <div v-else-if="sel.kind === 'subtask' && sub" class="editor">
+        <h2 class="serif heading">{{ prob.title || prob.name }} · {{ t("problems.point", { n: sel.s + 1 }) }}</h2>
+        <n-form label-placement="top" size="small" :show-feedback="false">
+          <n-grid :cols="4" :x-gap="16">
+            <n-form-item-gi :label="t('problems.score')"><n-input-number v-model:value="sub.score" :min="0" /></n-form-item-gi>
+            <n-form-item-gi :label="t('problems.time')"><n-input-number v-model:value="sub.time_ms" :min="1" :step="100" /></n-form-item-gi>
+            <n-form-item-gi :label="t('problems.memory')"><n-input-number v-model:value="sub.memory_mb" :min="1" :step="64" /></n-form-item-gi>
+            <n-form-item-gi :label="t('problems.depends')"><n-input v-model:value="subDepends" placeholder="1,2" /></n-form-item-gi>
+          </n-grid>
+        </n-form>
+        <n-divider title-placement="left">{{ t("problems.dataFiles") }} · {{ t("problems.cases", { n: sub.cases.length }) }}</n-divider>
+        <div class="hint" style="margin-bottom: 8px">{{ t("problems.minHint") }}</div>
+        <div v-for="(c, k) in sub.cases" :key="k" class="case-row">
+          <span class="tabular idx">{{ k + 1 }}</span>
+          <n-input v-model:value="c.input" size="small" :placeholder="t('problems.inputPath')" class="mono" />
+          <n-input v-model:value="c.output" size="small" :placeholder="t('problems.outputPath')" class="mono" />
+          <n-button size="small" quaternary @click="sub.cases.splice(k, 1)"><template #icon><n-icon><Trash /></n-icon></template></n-button>
+        </div>
+        <n-button size="small" dashed style="margin-top: 6px" @click="sub.cases.push({ input: '', output: '' })">＋ {{ t("problems.addCase") }}</n-button>
+      </div>
       <div v-else class="editor">
+        <h2 class="serif heading">{{ prob.title || prob.name }}</h2>
         <n-form label-placement="top" size="small" :show-feedback="false">
           <n-divider title-placement="left">{{ t("problems.basics") }}</n-divider>
           <n-grid :cols="3" :x-gap="16" :y-gap="12">
@@ -438,10 +558,61 @@ function applyPattern() {
   height: 100%;
 }
 .side {
-  width: 240px;
-  border-right: 1px solid rgba(127, 127, 127, 0.18);
+  width: 270px;
+  border-right: 1px solid var(--divider);
+  background: var(--panel);
   display: flex;
   flex-direction: column;
+}
+.treebar {
+  display: flex;
+  gap: 2px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--divider);
+}
+:deep(.tree-meta) {
+  font-size: 11px;
+  color: var(--text3);
+  font-variant-numeric: tabular-nums;
+}
+:deep(.tree-badge) {
+  font-size: 10px;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.heading {
+  font-size: 22px;
+  font-weight: 500;
+  margin: 16px 0 8px;
+}
+.summary {
+  display: flex;
+  gap: 28px;
+  margin: 18px 0;
+  color: var(--text2);
+}
+.summary b {
+  font-size: 22px;
+  color: var(--text);
+  margin-right: 4px;
+}
+.hint {
+  font-size: 12px;
+  color: var(--text3);
+}
+.case-row {
+  display: grid;
+  grid-template-columns: 28px 1fr 1fr 32px;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.case-row .idx {
+  color: var(--text3);
+  text-align: right;
+  font-size: 12px;
 }
 .item {
   padding: 8px 14px;
@@ -461,7 +632,7 @@ function applyPattern() {
 }
 .savebar {
   padding: 12px;
-  border-top: 1px solid rgba(127, 127, 127, 0.18);
+  border-top: 1px solid var(--divider);
 }
 .editor {
   padding: 4px 24px 24px;

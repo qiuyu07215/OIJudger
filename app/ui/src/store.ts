@@ -7,6 +7,7 @@ import {
   type CellView,
   type Contest,
   type ContestView,
+  type LogLine,
   type ProgressView,
 } from "./api";
 
@@ -20,7 +21,23 @@ export const state = reactive({
   contestants: [] as string[],
   progress: null as ProgressView | null,
   busy: false,
+  /** The judging window is open (LemonLime-style dialog). */
+  showJudging: false,
 });
+
+/** Rolling judging log (most recent last). */
+export const log = shallowRef<LogLine[]>([]);
+const LOG_MAX = 3000;
+
+export function appendLog(lines: LogLine[]) {
+  if (!lines.length) return;
+  const next = log.value.concat(lines);
+  log.value = next.length > LOG_MAX ? next.slice(next.length - LOG_MAX) : next;
+}
+
+export function clearLog() {
+  log.value = [];
+}
 
 /** (contestant, problem) → cell. Kept in a shallowRef: thousands of entries. */
 export const cells = shallowRef(new Map<string, CellView>());

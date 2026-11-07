@@ -10,6 +10,7 @@ const zh = {
   },
   welcome: {
     open: "打开比赛文件夹",
+    importCdf: "导入 LemonLime 比赛（.cdf）",
     hint: "把比赛文件夹拖到这里，或点击上方按钮选择",
     recent: "最近打开",
     layoutTitle: "目录结构（与 LemonLime 相同）",
@@ -17,14 +18,14 @@ const zh = {
       "比赛目录/\n  data/<试题>/        测试数据、校验器、交互库\n  source/<选手>/      选手文件，可放在 <试题>/ 子文件夹内\n  contest.toml        试题配置（首次打开时自动生成）",
     noData: "没有 data 目录时会自动创建空目录，之后可在“试题”页添加试题。",
   },
-  nav: { results: "成绩", problems: "试题", stats: "统计", plagiarism: "查重" },
+  nav: { summary: "概要", results: "结果", problems: "试题", stats: "统计", plagiarism: "查重" },
   toolbar: {
-    judgeStale: "评测未测试/已变化", judgeAll: "全部重测", judgeSelected: "评测选中",
+    judgeStale: "测试未测试", judgeAll: "测试全部", judgeSelected: "测试选中", export: "导出",
     stop: "停止", reload: "刷新", openDir: "打开比赛目录", settings: "设置", closeContest: "关闭比赛",
     staleCount: "{n} 项待评测",
   },
   results: {
-    rank: "名次", contestant: "选手", total: "总分", time: "用时", filter: "筛选选手…",
+    rank: "名次", contestant: "选手", total: "总分", time: "总用时", judgedAt: "评测时间", filter: "筛选选手…",
     contestants: "{n} 名选手", problems: "{n} 道试题", noContestants: "source 目录中还没有选手文件夹",
     stale: "源程序、数据或设置已变化，需要重新评测", notJudged: "未评测",
   },
@@ -46,6 +47,10 @@ const zh = {
     idle: "空闲", finished: "评测完成", cancelled: "已停止", workers: "评测线程",
   },
   problems: {
+    contest: "比赛", contestShort: "比赛", contestTitle: "比赛名称", point: "测试点 {n}", removePoint: "删除这个测试点？",
+    problemsUnit: "道试题", pointsUnit: "分", contestantsUnit: "名选手",
+    contestHint: "在左侧选择试题或测试点进行编辑；修改后点击“保存”写入 contest.toml。",
+    minHint: "一个测试点可包含多组数据，得分取其中的最低分。",
     list: "试题列表", detect: "自动识别试题", detectHint: "从 data/ 子目录识别新的试题（不会覆盖已有试题）",
     add: "新建试题", none: "还没有试题。把数据放进 data/<试题名>/，然后点“自动识别试题”。",
     basics: "基本信息", name: "试题名（目录名）", title: "显示名称", kind: "题型", sourceName: "源文件名（不含扩展名）",
@@ -103,6 +108,22 @@ const zh = {
     similarity: "相似度", shared: "共同片段", jaccard: "Jaccard", compare: "对照查看", pairs: "{n} 对可疑提交",
     matched: "高亮行为两份代码中匹配的片段",
   },
+  menu: {
+    file: "文件", contest: "比赛", judge: "评测", tools: "工具", help: "帮助",
+    open: "打开比赛文件夹…", importCdf: "导入 LemonLime 比赛…", recent: "最近打开", openDir: "打开比赛目录",
+    close: "关闭比赛", reload: "刷新选手与试题", detect: "自动识别试题", export: "导出成绩",
+    judgeAll: "测试全部", judgeStale: "测试未测试 / 已变化", judgeSelected: "测试选中选手", stop: "停止评测",
+    showJudging: "显示评测窗口", settings: "设置…", selftest: "沙箱自检…", plagiarism: "代码查重",
+    about: "关于 OIJudger", aboutText: "OIJudger {v} —— 沙箱隔离、高效的 OI 本地评测工具。目录结构与 LemonLime 兼容。",
+  },
+  statusbar: {
+    ready: "就绪", judging: "评测中 {done}/{total}", contestants: "{n} 名选手", problems: "{n} 道试题",
+    stale: "{n} 项待评测", show: "点击查看评测窗口",
+  },
+  judging: {
+    title: "评测", compiling: "编译中 {done}/{total}", background: "后台运行", stop: "停止", close: "关闭", log: "评测记录", empty: "等待评测结果…",
+    point: "测试点 {n}", total: "总分", follow: "自动滚动",
+  },
   msg: {
     openFailed: "打开失败：{e}", saveFailed: "保存失败：{e}", judgeFailed: "评测出错：{e}",
     nothingToJudge: "没有需要评测的项目", selectFirst: "请先在表格中勾选选手",
@@ -120,6 +141,7 @@ const en: typeof zh = {
   },
   welcome: {
     open: "Open contest folder",
+    importCdf: "Import LemonLime contest (.cdf)",
     hint: "Drop a contest folder here or use the button above",
     recent: "Recent",
     layoutTitle: "Folder layout (same as LemonLime)",
@@ -127,14 +149,14 @@ const en: typeof zh = {
       "contest/\n  data/<problem>/      test data, checkers, graders\n  source/<contestant>/ submissions, optionally in <problem>/ subfolders\n  contest.toml         problem configuration (created on first open)",
     noData: "Missing data/ and source/ folders are created; add problems on the Problems page.",
   },
-  nav: { results: "Results", problems: "Problems", stats: "Statistics", plagiarism: "Similarity" },
+  nav: { summary: "Summary", results: "Results", problems: "Problems", stats: "Statistics", plagiarism: "Similarity" },
   toolbar: {
-    judgeStale: "Judge new / changed", judgeAll: "Rejudge all", judgeSelected: "Judge selected",
+    judgeStale: "Judge new", judgeAll: "Judge all", judgeSelected: "Judge selected", export: "Export",
     stop: "Stop", reload: "Reload", openDir: "Open contest folder", settings: "Settings", closeContest: "Close contest",
     staleCount: "{n} to judge",
   },
   results: {
-    rank: "Rank", contestant: "Contestant", total: "Total", time: "Time", filter: "Filter contestants…",
+    rank: "Rank", contestant: "Contestant", total: "Total", time: "Time", judgedAt: "Judged at", filter: "Filter contestants…",
     contestants: "{n} contestants", problems: "{n} problems", noContestants: "No contestant folders in source/ yet",
     stale: "Source, data or settings changed — needs rejudging", notJudged: "Not judged",
   },
@@ -154,6 +176,10 @@ const en: typeof zh = {
     idle: "idle", finished: "Judging finished", cancelled: "Stopped", workers: "Workers",
   },
   problems: {
+    contest: "Contest", contestShort: "Contest", contestTitle: "Contest title", point: "Test point {n}", removePoint: "Delete this test point?",
+    problemsUnit: "problems", pointsUnit: "points", contestantsUnit: "contestants",
+    contestHint: "Select a problem or test point on the left to edit it; click Save to write contest.toml.",
+    minHint: "A test point may contain several data files; its score is the minimum over them.",
     list: "Problems", detect: "Detect problems", detectHint: "Detect new problems from data/ subfolders (existing ones are kept)",
     add: "New problem", none: "No problems yet. Put data into data/<problem>/ and click “Detect problems”.",
     basics: "Basics", name: "Name (data folder)", title: "Title", kind: "Type", sourceName: "Source name (no extension)",
@@ -212,6 +238,22 @@ const en: typeof zh = {
     hint: "Compares code structure (ignoring names, comments, formatting and common templates). Similarity is the share of the shorter submission covered by the other.",
     similarity: "Similarity", shared: "Shared fragments", jaccard: "Jaccard", compare: "Compare", pairs: "{n} suspicious pair(s)",
     matched: "Highlighted lines match between the two submissions",
+  },
+  menu: {
+    file: "File", contest: "Contest", judge: "Judge", tools: "Tools", help: "Help",
+    open: "Open contest folder…", importCdf: "Import LemonLime contest…", recent: "Recent", openDir: "Open contest folder in Explorer",
+    close: "Close contest", reload: "Reload contestants and problems", detect: "Detect problems", export: "Export results",
+    judgeAll: "Judge all", judgeStale: "Judge new / changed", judgeSelected: "Judge selected contestants", stop: "Stop judging",
+    showJudging: "Show judging window", settings: "Settings…", selftest: "Sandbox self test…", plagiarism: "Similarity check",
+    about: "About OIJudger", aboutText: "OIJudger {v} — a fast, sandboxed local judge for OI contests, compatible with LemonLime folders.",
+  },
+  statusbar: {
+    ready: "Ready", judging: "Judging {done}/{total}", contestants: "{n} contestants", problems: "{n} problems",
+    stale: "{n} to judge", show: "Click to show the judging window",
+  },
+  judging: {
+    title: "Judging", compiling: "Compiling {done}/{total}", background: "Run in background", stop: "Stop", close: "Close", log: "Log", empty: "Waiting for results…",
+    point: "test point {n}", total: "total", follow: "Auto scroll",
   },
   msg: {
     openFailed: "Cannot open: {e}", saveFailed: "Cannot save: {e}", judgeFailed: "Judging failed: {e}",

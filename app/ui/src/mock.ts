@@ -32,12 +32,12 @@ const labels = ["WA", "TLE", "RE", "MLE"];
 function makeCell(c: string, p: (typeof contest.problem)[number]): CellView {
   const full = p.subtask.reduce((s, t) => s + t.score, 0);
   const r = rnd();
-  if (r < 0.06) return { contestant: c, problem: p.name, score: 0, full, label: "Missing", status: "NoSource", time_ms: 0, stale: false };
-  if (r < 0.1) return { contestant: c, problem: p.name, score: 0, full, label: "CE", status: "CompileError", time_ms: 0, stale: false };
+  if (r < 0.06) return { contestant: c, problem: p.name, score: 0, full, label: "Missing", status: "NoSource", time_ms: 0, judged_at: 1794000000, stale: false };
+  if (r < 0.1) return { contestant: c, problem: p.name, score: 0, full, label: "CE", status: "CompileError", time_ms: 0, judged_at: 1794000000, stale: false };
   const score = r > 0.55 ? full : Math.round(full * rnd() * 10) / 10 > full * 0.1 ? Math.round(full * rnd()) : 0;
   return {
     contestant: c, problem: p.name, score, full, label: score >= full ? "AC" : labels[Math.floor(rnd() * labels.length)],
-    status: "Judged", time_ms: Math.round(rnd() * 3000), stale: rnd() < 0.03,
+    status: "Judged", time_ms: Math.round(rnd() * 3000), judged_at: 1794000000 + Math.round(rnd() * 3600), stale: rnd() < 0.03,
   };
 }
 
@@ -75,7 +75,7 @@ function result(c: string, pname: string): ProblemResult | null {
 
 let open = false;
 async function simulate(total: number) {
-  const view: ProgressView = { running: true, total, done: 0, workers: [null, null, null, null], counts: {}, elapsed_ms: 0, updates: [], messages: [], error: null };
+  const view: ProgressView = { running: true, compile_done: 0, compile_total: 0, total, done: 0, workers: [null, null, null, null], counts: {}, elapsed_ms: 0, updates: [], messages: [], log: [], error: null };
   const start = Date.now();
   for (let i = 0; i < total; i++) {
     await new Promise((r) => setTimeout(r, 60));
@@ -89,9 +89,14 @@ async function simulate(total: number) {
     view.workers = view.workers.map((_, k) => ({ contestant: names[(i + k) % names.length], problem: contest.problem[(i + k) % 4].name, cases_done: k * 3 }));
     view.elapsed_ms = Date.now() - start;
     view.updates = [cell];
+    const pr = contest.problem.find((x) => x.name === cell.problem)!;
+    view.log = [
+      ...pr.subtask.slice(0, 3).map((_, k) => ({ contestant: c, problem: pr.name, subtask: k + 1, input: "", verdict: k === 2 && cell.label !== "AC" ? cell.label : "AC", time_ms: Math.round(rnd() * 300), memory_kb: 2048 + Math.round(rnd() * 9000), score: null, message: k === 2 && cell.label === "WA" ? "Line 1: expected `42`, found `41`" : "" })),
+      { contestant: c, problem: pr.name, subtask: 0, input: "", verdict: cell.label, time_ms: cell.time_ms, memory_kb: 0, score: [cell.score, cell.full] as [number, number], message: "" },
+    ];
     await emit("judge-progress", { ...view });
   }
-  await emit("judge-progress", { ...view, running: false, workers: [], updates: [] });
+  await emit("judge-progress", { ...view, running: false, workers: [], updates: [], log: [] });
 }
 
 function summary(xs: number[], full: number) {

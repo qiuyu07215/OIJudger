@@ -22,9 +22,9 @@ function cellStyle(score: number, full: number, status: string, label: string) {
   if (status === "SystemError") return { background: "var(--cell-se)", color: "var(--cell-se-fg)" };
   if (full > 0 && score >= full - 1e-9) return { background: "var(--cell-full)", color: "var(--cell-full-fg)" };
   if (score <= 1e-9) return { background: "var(--cell-zero)", color: "var(--cell-zero-fg)" };
-  // Partial: blend from red to green by ratio.
   const r = Math.max(0, Math.min(1, score / full));
-  const hue = Math.round(10 + r * 110);
+  // Partial scores stay in the red → amber range so they never read as AC.
+  const hue = Math.round(12 + r * 36);
   return { background: `hsla(${hue}, 70%, 50%, var(--partial-a))`, color: `hsl(${hue}, 60%, var(--partial-l))` };
 }
 
@@ -40,6 +40,8 @@ const columns = computed<DataTableColumns<Row>>(() => {
       width: 160,
       fixed: "left",
       ellipsis: { tooltip: true },
+      render: (r) =>
+        h("a", { class: "name-link", onClick: () => (detail.value = { contestant: r.contestant, problem: "" }) }, r.contestant),
     },
     {
       title: t("results.total"),
@@ -83,6 +85,16 @@ const columns = computed<DataTableColumns<Row>>(() => {
     });
   }
   cols.push({
+    title: t("results.judgedAt"),
+    key: "judged",
+    width: 150,
+    render: (r) => {
+      let latest = 0;
+      for (const p of probs) latest = Math.max(latest, getCell(r.contestant, p.name)?.judged_at ?? 0);
+      return h("span", { style: "color: var(--text3); font-size: 12px" }, latest ? new Date(latest * 1000).toLocaleString() : "");
+    },
+  });
+  cols.push({
     title: t("results.time"),
     key: "time",
     width: 90,
@@ -118,3 +130,15 @@ const columns = computed<DataTableColumns<Row>>(() => {
     <ResultDrawer :target="detail" @close="detail = null" />
   </div>
 </template>
+
+<style scoped>
+:deep(.name-link) {
+  color: var(--text);
+  cursor: pointer;
+  text-decoration: underline dotted color-mix(in srgb, var(--text3) 60%, transparent);
+  text-underline-offset: 3px;
+}
+:deep(.name-link:hover) {
+  color: var(--accent);
+}
+</style>

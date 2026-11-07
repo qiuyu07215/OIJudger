@@ -1,4 +1,4 @@
-"""Render the OIJudger icon (rounded green square with a check mark) to a PNG."""
+"""Render the OIJudger icon (rounded terracotta square with a check mark) to a PNG."""
 import math
 import struct
 import sys
@@ -36,12 +36,12 @@ def main(out):
             if a <= 0:
                 row += b"\0\0\0\0"
                 continue
-            # vertical gradient green
-            g = 0.92 - 0.18 * y
-            col = [int(35 * g + 10), int(140 * g), int(80 * g + 5)]
+            # warm terracotta (#D97757) with a soft vertical gradient
+            g = 1.04 - 0.12 * y
+            col = [min(255, int(217 * g)), int(119 * g), int(87 * g)]
             d = min(seg_dist(x, y, *pts[0], *pts[1]), seg_dist(x, y, *pts[1], *pts[2]))
             k = max(0.0, min(1.0, (w - d) * N + 0.5))
-            col = [int(c * (1 - k) + 255 * k) for c in col]
+            col = [int(c * (1 - k) + w_ * k) for c, w_ in zip(col, (250, 249, 245))]
             row += bytes(col + [int(255 * a)])
         rows.append(bytes(row))
     raw = zlib.compress(b"".join(rows), 9)

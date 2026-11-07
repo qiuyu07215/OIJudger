@@ -5,14 +5,14 @@ import {
   useMessage, useOsTheme, useThemeVars, type DataTableColumns,
 } from "naive-ui";
 import { useI18n } from "vue-i18n";
-import { save } from "@tauri-apps/plugin-dialog";
 import VChart from "vue-echarts";
 import { use } from "echarts/core";
 import { CanvasRenderer } from "echarts/renderers";
 import { BarChart, BoxplotChart, HeatmapChart } from "echarts/charts";
 import { GridComponent, TooltipComponent, VisualMapComponent } from "echarts/components";
 import { api, fmtScore, type ContestStats, type ProblemStat, type ScoreCount, type GroupStat } from "../api";
-import { state, cells } from "../store";
+import { cells } from "../store";
+import { exportAs } from "../actions";
 
 use([CanvasRenderer, BarChart, BoxplotChart, HeatmapChart, GridComponent, TooltipComponent, VisualMapComponent]);
 
@@ -45,9 +45,14 @@ watch(cells, () => {
 
 // ---- palette (reference data-viz palette; light / dark steps) -------------
 const dark = computed(() => os.value === "dark");
-const blue = computed(() => (dark.value ? "#3987e5" : "#2a78d6"));
-const seqRamp = computed(() => (dark.value ? ["#104281", "#256abf", "#5598e7", "#9ec5f4"] : ["#cde2fb", "#86b6ef", "#3987e5", "#1c5cab", "#104281"]));
-const divRamp = computed(() => (dark.value ? ["#e66767", "#383835", "#3987e5"] : ["#e34948", "#f0efec", "#2a78d6"]));
+// Single series: the terracotta accent. Sequential: one warm hue, light→dark
+// (dark mode: dark→light so low values recede into the surface). Diverging:
+// slate blue ↔ terracotta around a neutral midpoint.
+const blue = computed(() => "#D97757");
+const seqRamp = computed(() =>
+  dark.value ? ["#3A2A23", "#7A4430", "#B65F40", "#D97757", "#F0B79F"] : ["#F6E6DD", "#EDBFA8", "#D97757", "#B0532F", "#7A3720"],
+);
+const divRamp = computed(() => (dark.value ? ["#93AECB", "#3A3A35", "#E2896B"] : ["#5E7B99", "#F0EEE6", "#D97757"]));
 const axis = computed(() => ({
   axisLine: { lineStyle: { color: vars.value.dividerColor } },
   axisTick: { show: false },
@@ -115,7 +120,7 @@ const boxOption = computed(() => {
     },
     xAxis: { type: "category", data: s.problems.map((p) => p.title), ...axis.value, splitLine: { show: false } },
     yAxis: { type: "value", min: 0, max: 100, name: "%", nameTextStyle: { color: vars.value.textColor3 }, ...axis.value },
-    series: [{ type: "boxplot", data, itemStyle: { color: dark.value ? "rgba(57,135,229,.25)" : "rgba(42,120,214,.15)", borderColor: blue.value, borderWidth: 2 }, boxWidth: [12, 40] }],
+    series: [{ type: "boxplot", data, itemStyle: { color: dark.value ? "rgba(217,119,87,.22)" : "rgba(217,119,87,.14)", borderColor: blue.value, borderWidth: 2 }, boxWidth: [12, 40] }],
   };
 });
 
@@ -248,16 +253,8 @@ const exportOptions = computed(() => [
   { label: t("stats.exportXlsx"), key: "xlsx" },
   { label: t("stats.exportCsv"), key: "csv" },
 ]);
-async function doExport(fmt: string) {
-  const base = (state.contest?.title || "results").replace(/[\\/:*?"<>|]/g, "_");
-  const path = await save({ defaultPath: `${state.root}\\${base}.${fmt}`, filters: [{ name: fmt.toUpperCase(), extensions: [fmt] }] });
-  if (!path) return;
-  try {
-    await api.exportResults(fmt, path);
-    message.success(t("stats.exported", { p: path }));
-  } catch (e) {
-    message.error(String(e));
-  }
+function doExport(fmt: string) {
+  exportAs(fmt as "html", message);
 }
 </script>
 
