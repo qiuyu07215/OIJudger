@@ -37,6 +37,7 @@ if needs_loader:
         sys.exit("OIJudger.exe needs WebView2Loader.dll but it is not in the target directory")
     shutil.copy2(loader, stage)
 shutil.copy2(os.path.join(ROOT, "README.md"), stage)
+shutil.copy2(os.path.join(ROOT, "LICENSE"), os.path.join(stage, "LICENSE.txt"))
 os.makedirs(os.path.join(stage, "licenses"), exist_ok=True)
 shutil.copy2(os.path.join(ROOT, "assets", "testlib", "LICENSE"), os.path.join(stage, "licenses", "testlib-LICENSE.txt"))
 shutil.copytree(
