@@ -24,6 +24,7 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 
 pub use pe::set_stack_reserve;
+pub use win::acl::reset_inherited as reset_acl;
 pub use status::describe_exit_code;
 
 #[cfg(windows)]

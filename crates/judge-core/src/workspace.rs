@@ -188,15 +188,33 @@ pub fn default_worker_count() -> usize {
     }
 }
 
+/// Logical processors (group 0) that compilers may use while `judges`
+/// pinned judging workers are timing programs: every core except the
+/// judging cores, including their SMT siblings (a compiler on the sibling
+/// would slow the timed program down). 0 when there is none or the judging
+/// workers cannot be pinned.
+pub fn spare_cpu_mask(judges: usize) -> usize {
+    let masks = sandbox::performance_core_masks();
+    if judges > masks.len() {
+        return 0;
+    }
+    let used = &masks[..judges];
+    sandbox::cpu_cores()
+        .into_iter()
+        .filter(|c| c.group == 0 && c.mask & used.iter().fold(0, |a, m| a | m) == 0)
+        .fold(0, |a, c| a | c.mask)
+}
+
 impl Workspace {
     /// Create `count` judging workers (0 = default) and no compile workers.
     pub fn new(count: usize, pin: bool) -> Result<Workspace> {
-        Self::with_builders(count, pin, 0)
+        Self::with_builders(count, pin, 0, 0)
     }
 
     /// `count` judging workers plus `builders` compile workers. Judging
-    /// worker `i` is pinned to the i-th performance core when `pin` is set.
-    pub fn with_builders(count: usize, pin: bool, builders: usize) -> Result<Workspace> {
+    /// worker `i` is pinned to the i-th performance core when `pin` is set;
+    /// compile workers run on `builder_affinity` (0 = any processor).
+    pub fn with_builders(count: usize, pin: bool, builders: usize, builder_affinity: usize) -> Result<Workspace> {
         let count = if count == 0 { default_worker_count() } else { count };
         let base = work_base();
         cleanup_stale(&base);
@@ -219,8 +237,7 @@ impl Workspace {
             let affinity = match (i < count, pinned) {
                 (true, true) => masks[i],
                 (true, false) => 0,
-                // Builders compile before judging starts: no pinning.
-                (false, _) => 0,
+                (false, _) => builder_affinity,
             };
             let w = Worker::create(&root, i, affinity)?;
             if i < count {

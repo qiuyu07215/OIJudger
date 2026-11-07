@@ -98,6 +98,7 @@ const langOptions = [
             <n-input-number v-model:value="form.workers" :min="0" :max="64" style="width: 120px" />
           </n-form-item-gi>
           <n-form-item-gi :span="2" :label="t('settings.pin')"><n-switch v-model:value="form.pin_cores" /></n-form-item-gi>
+          <n-form-item-gi :span="2" :label="t('settings.overlap')"><n-switch v-model:value="form.overlap_compile" /></n-form-item-gi>
           <n-form-item-gi :span="2" :label="t('settings.patchStack')"><n-switch v-model:value="form.patch_stack" /></n-form-item-gi>
           <n-form-item-gi :label="t('settings.outputLimit')"><n-input-number v-model:value="form.output_limit_mb" :min="1" /></n-form-item-gi>
           <n-form-item-gi :label="t('settings.language')"><n-select v-model:value="form.language" :options="langOptions" /></n-form-item-gi>

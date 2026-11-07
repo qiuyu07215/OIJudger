@@ -22,6 +22,10 @@ pub struct Settings {
     pub workers: usize,
     /// Pin workers to distinct performance cores.
     pub pin_cores: bool,
+    /// Judge each submission as soon as it is compiled instead of compiling
+    /// everything first. Compilers then run on the cores not used for
+    /// timing (and on idle judging workers).
+    pub overlap_compile: bool,
     /// Raise the stack reserve of contestant programs to the memory limit.
     pub patch_stack: bool,
     pub output_limit_mb: u64,
@@ -34,6 +38,7 @@ impl Default for Settings {
         Settings {
             workers: 0,
             pin_cores: true,
+            overlap_compile: true,
             patch_stack: true,
             output_limit_mb: 256,
             build: BuildLimits::default(),
@@ -186,6 +191,7 @@ fn judge_inner(
     }
 
     let mut compile_log = String::new();
+    let mut _exe_grant: Option<ExeGrant> = None; // held until judging ends
     let runner = if problem.kind == ProblemKind::Answer {
         let any = problem
             .subtasks
@@ -219,14 +225,12 @@ fn judge_inner(
             BuildOutput::Failed { log } => return empty(Status::CompileError, log),
             BuildOutput::Ok { exe, log } => {
                 compile_log = log;
-                let run_dir = worker.fresh_run_dir()?;
-                let name = format!("{}.exe", problem.source_name());
-                let dst = run_dir.join(&name);
-                retry_io(|| std::fs::copy(&exe, &dst)).with_context(|| format!("copying {}", exe.display()))?;
-                if ctx.settings.patch_stack {
-                    sandbox::set_stack_reserve(&dst, problem.max_memory_mb() << 20)?;
-                }
-                Runner::Program { exe: name.clone(), keep: vec![name], procs: 1 }
+                worker.fresh_run_dir()?;
+                // Run the cached program where it is: copying it would make
+                // antivirus software scan it again before the first run.
+                // Only this worker's sandbox may read it, for this task.
+                _exe_grant = Some(ExeGrant::new(worker, &exe)?);
+                Runner::Program { exe: exe.to_string_lossy().into_owned(), keep: Vec::new(), procs: 1 }
             }
         }
     };
@@ -357,7 +361,13 @@ pub(crate) fn build_request(
     let Some((compiler, _)) = ctx.tools.get(lang) else {
         return Ok(Some(Err(format!("No compiler configured for {lang:?}"))));
     };
-    Ok(Some(Ok(BuildRequest { files, compiler: compiler.clone(), extra_args: problem.compile_args.clone() })))
+    let mut extra_args = problem.compile_args.clone();
+    if ctx.settings.patch_stack {
+        // Windows gives programs a 2 MB stack by default; make the stack as
+        // large as the memory limit, like on Linux judges.
+        extra_args.push_str(&format!(" -Wl,--stack,{}", problem.max_memory_mb() << 20));
+    }
+    Ok(Some(Ok(BuildRequest { files, compiler: compiler.clone(), extra_args })))
 }
 
 /// Score a produced output file (checker or built-in comparator).
@@ -411,6 +421,7 @@ fn run_case(
     limits.output_bytes = ctx.settings.output_limit_mb << 20;
     limits.affinity = worker.affinity();
     let stderr_path = run_dir.join(STDERR_NAME);
+    // `exe` is either a name in the run directory or an absolute path.
     let mut spec = sandbox::RunSpec::new(run_dir.join(exe), &run_dir, limits);
     spec.stderr = sandbox::Stdio::File(File::create(&stderr_path)?);
     spec.limits.watch_files.push(stderr_path.clone());
@@ -694,4 +705,29 @@ fn prepare_multi(ctx: &JudgeContext, worker: &Worker, contestant: &str, problem:
     }
     let procs = programs.len() as u32 + 1;
     Ok(Prepared::Ready(Runner::Program { exe: "grader.exe".into(), keep, procs }, logs))
+}
+
+/// Read access for one worker's sandbox to a cached executable, revoked on
+/// drop. ACL updates of one file are read-modify-write, so they are
+/// serialised (two workers may run the same cached program at once).
+struct ExeGrant<'a> {
+    worker: &'a Worker,
+    exe: PathBuf,
+}
+
+static EXE_ACL_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+impl<'a> ExeGrant<'a> {
+    fn new(worker: &'a Worker, exe: &Path) -> Result<ExeGrant<'a>> {
+        let _g = EXE_ACL_LOCK.lock();
+        worker.container().grant_read(exe).with_context(|| format!("granting access to {}", exe.display()))?;
+        Ok(ExeGrant { worker, exe: exe.to_path_buf() })
+    }
+}
+
+impl Drop for ExeGrant<'_> {
+    fn drop(&mut self) {
+        let _g = EXE_ACL_LOCK.lock();
+        let _ = self.worker.container().revoke(&self.exe);
+    }
 }

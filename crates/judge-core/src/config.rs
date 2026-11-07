@@ -18,6 +18,8 @@ pub struct AppSettings {
     /// Parallel workers; 0 = automatic.
     pub workers: usize,
     pub pin_cores: bool,
+    /// Compile and judge at the same time.
+    pub overlap_compile: bool,
     pub patch_stack: bool,
     pub output_limit_mb: u64,
     pub compile_time_ms: u64,
@@ -37,6 +39,7 @@ impl Default for AppSettings {
             compilers: Vec::new(),
             workers: 0,
             pin_cores: s.pin_cores,
+            overlap_compile: s.overlap_compile,
             patch_stack: s.patch_stack,
             output_limit_mb: s.output_limit_mb,
             compile_time_ms: s.build.cpu_ms,
@@ -82,6 +85,7 @@ impl AppSettings {
         Settings {
             workers: self.workers,
             pin_cores: self.pin_cores,
+            overlap_compile: self.overlap_compile,
             patch_stack: self.patch_stack,
             output_limit_mb: self.output_limit_mb.max(1),
             build: BuildLimits { cpu_ms: self.compile_time_ms.max(1000), memory_mb: self.compile_memory_mb.max(256) },

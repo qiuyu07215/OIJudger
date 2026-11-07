@@ -327,6 +327,7 @@ pub fn build(
     cache_dir: &Path,
     limits: &BuildLimits,
 ) -> Result<BuildOutput> {
+    let t_enter = std::time::Instant::now();
     let key = req.cache_key(compiler_version)?;
     let cached_exe = cache_dir.join(format!("{key}.exe"));
     let cached_log = cache_dir.join(format!("{key}.log"));
@@ -393,16 +394,18 @@ pub fn build(
     // GCC keeps intermediate files in TEMP, which CreateProcess points at the
     // build container's profile folder; start from an empty one every time.
     worker.build_container().wipe_profile_temp();
+    let prep_ms = t_enter.elapsed().as_millis();
     let t0 = std::time::Instant::now();
     let r = worker.build_container().run(spec).context("starting compiler")?;
     if std::env::var_os("OIJ_DEBUG").is_some() {
         eprintln!(
-            "[w{}] compile {:?}: {:?} in {} ms (cpu {} ms)",
+            "[w{}] compile {:?}: {:?} in {} ms (cpu {} ms) prep {} ms",
             worker.index(),
             req.files[0].1,
             r.outcome,
             t0.elapsed().as_millis(),
-            r.cpu_ms
+            r.cpu_ms,
+            prep_ms
         );
     }
 
@@ -411,11 +414,23 @@ pub fn build(
     std::fs::create_dir_all(cache_dir)?;
     if r.outcome == sandbox::Outcome::Ok && out_exe.is_file() {
         std::fs::write(&cached_log, &text)?;
+        // Move, not copy: every newly written executable is scanned again by
+        // antivirus software (hundreds of milliseconds each, serialised
+        // across all compilers); a moved file keeps its scan result.
         let tmp = cache_dir.join(format!("{key}.{}.tmp", worker.index()));
-        retry_io(|| std::fs::copy(&out_exe, &tmp)).context("storing compiled program")?;
+        if retry_io(|| std::fs::rename(&out_exe, &tmp)).is_ok() {
+            // Drop the build sandbox's access inherited from the build folder.
+            sandbox::reset_acl(&tmp).context("resetting permissions of compiled program")?;
+        } else {
+            // Different volume.
+            retry_io(|| std::fs::copy(&out_exe, &tmp)).context("storing compiled program")?;
+        }
         retry_io(|| std::fs::rename(&tmp, &cached_exe))
             .or_else(|e| if cached_exe.is_file() { Ok(()) } else { Err(e) })
             .context("storing compiled program")?;
+        if std::env::var_os("OIJ_DEBUG").is_some() {
+            eprintln!("[w{}] stored {:?} total {} ms", worker.index(), req.files[0].1, t_enter.elapsed().as_millis());
+        }
         Ok(BuildOutput::Ok { exe: cached_exe, log: text })
     } else {
         match r.outcome {

@@ -2,7 +2,7 @@
 
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 use anyhow::Result;
@@ -51,6 +51,10 @@ pub enum Command {
         /// Do not pin workers to CPU cores
         #[arg(long)]
         no_pin: bool,
+        /// Compile everything before judging starts (default: judge each
+        /// program as soon as it is compiled)
+        #[arg(long)]
+        two_phase: bool,
         /// Print every finished task
         #[arg(short, long)]
         verbose: bool,
@@ -125,13 +129,16 @@ pub fn run(cli: Cli) -> Result<i32> {
             println!("Contestants: {}", judge_core::discover::list_contestants(&cd).len());
             Ok(0)
         }
-        Command::Judge { dir, problems, contestants, all, jobs, no_pin, verbose } => {
+        Command::Judge { dir, problems, contestants, all, jobs, no_pin, two_phase, verbose } => {
             let mut settings = settings;
             if let Some(j) = jobs {
                 settings.workers = j;
             }
             if no_pin {
                 settings.pin_cores = false;
+            }
+            if two_phase {
+                settings.overlap_compile = false;
             }
             let project = Project::open(&dir)?;
             let sel = Selection { problems, contestants, only_stale: !all };
@@ -243,44 +250,58 @@ pub fn run(cli: Cli) -> Result<i32> {
 
 fn judge(project: &Project, settings: &AppSettings, sel: &Selection, verbose: bool) -> Result<()> {
     let cancel = AtomicBool::new(false);
-    let total = AtomicUsize::new(0);
-    let done = AtomicUsize::new(0);
     let start = Instant::now();
+    // (compiled, to compile, judged, to judge)
+    let state = std::sync::Mutex::new((0usize, 0usize, 0usize, 0usize));
     let stderr = std::sync::Mutex::new(std::io::stderr());
+    let status = |st: &(usize, usize, usize, usize)| {
+        let mut parts = Vec::new();
+        if st.1 > 0 && st.0 < st.1 {
+            parts.push(format!("compile {}/{}", st.0, st.1));
+        }
+        if st.3 > 0 {
+            parts.push(format!("judge {}/{}", st.2, st.3));
+        }
+        format!("\r[{}]{:10}", parts.join("] ["), "")
+    };
     let n = project.judge(
         settings,
         sel,
         &|ev| {
+            let mut st = state.lock().unwrap();
             let mut e = stderr.lock().unwrap();
             match ev {
                 Event::Compiled { done, total } => {
+                    st.0 = st.0.max(*done);
+                    st.1 = *total;
                     if *done == 0 {
                         let _ = writeln!(e, "Compiling {total} program(s)…");
                     } else if done == total {
                         let _ = writeln!(
                             e,
-                            "\rCompiled {total} program(s) in {:.1}s{:20}",
+                            "\rCompiled {total} program(s) in {:.1}s{:30}",
                             start.elapsed().as_secs_f64(),
                             ""
                         );
                     } else if !verbose {
-                        let _ = write!(e, "\r[compile {done}/{total}]");
+                        let _ = write!(e, "{}", status(&st));
                     }
                 }
                 Event::Started { total: t, workers } => {
-                    total.store(*t, Ordering::Relaxed);
+                    st.3 = *t;
                     let _ = writeln!(e, "Judging {t} task(s) with {workers} worker(s)…");
                 }
                 Event::Message(m) => {
-                    let _ = writeln!(e, "{m}");
+                    let _ = writeln!(e, "\r{m}");
                 }
                 Event::TaskDone { result, .. } => {
-                    let d = done.fetch_add(1, Ordering::Relaxed) + 1;
-                    let t = total.load(Ordering::Relaxed);
+                    st.2 += 1;
                     if verbose {
                         let _ = writeln!(
                             e,
-                            "[{d}/{t}] {:<16} {:<12} {:>6}/{:<4} {}",
+                            "[{}/{}] {:<16} {:<12} {:>6}/{:<4} {}",
+                            st.2,
+                            st.3,
                             result.contestant,
                             result.problem,
                             fmt_score(result.score),
@@ -288,7 +309,7 @@ fn judge(project: &Project, settings: &AppSettings, sel: &Selection, verbose: bo
                             result.label()
                         );
                     } else {
-                        let _ = write!(e, "\r[{d}/{t}] {:<40}", format!("{}/{}", result.contestant, result.problem));
+                        let _ = write!(e, "{}", status(&st));
                     }
                 }
                 _ => {}
@@ -296,7 +317,7 @@ fn judge(project: &Project, settings: &AppSettings, sel: &Selection, verbose: bo
         },
         &cancel,
     )?;
-    eprintln!("\rJudged {n} task(s) in {:.1}s{:30}", start.elapsed().as_secs_f64(), "");
+    eprintln!("\rJudged {n} task(s) in {:.1}s{:40}", start.elapsed().as_secs_f64(), "");
     Ok(())
 }
 

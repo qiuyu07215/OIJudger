@@ -248,7 +248,10 @@ watch(
             compiling
               ? t("judging.compiling", { done: state.progress.compile_done, total: state.progress.compile_total })
               : judging
-                ? t("statusbar.judging", { done: state.progress.done, total: state.progress.total })
+                ? t("statusbar.judging", { done: state.progress.done, total: state.progress.total }) +
+                  (state.progress.compile_done < state.progress.compile_total
+                    ? " · " + t("judging.compiledShort", { done: state.progress.compile_done, total: state.progress.compile_total })
+                    : "")
                 : t("progress.finished")
           }}</span>
           <n-progress type="line" :percentage="pct" :show-indicator="false" :height="6" :processing="judging" color="#D97757" style="width: 140px" />

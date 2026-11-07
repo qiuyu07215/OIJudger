@@ -53,6 +53,10 @@ struct Env {
 }
 
 fn container(i: usize) -> Container {
+    // Tests run in parallel and share profile names; creating the same
+    // profile concurrently can fail with E_UNEXPECTED.
+    static CREATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _g = CREATE.lock().unwrap_or_else(|e| e.into_inner());
     Container::open(&format!("OIJudger.Test.W{i}")).expect("AppContainer")
 }
 

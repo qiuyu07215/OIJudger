@@ -1,11 +1,12 @@
 //! Parallel judging of many (contestant, problem) tasks.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::OnceLock;
 
 use anyhow::{Context, Result};
+use parking_lot::{Condvar, Mutex};
 
 use crate::compile::{build, BuildOutput, BuildRequest, CompilerConfig, Lang};
 use crate::judge::{judge_problem, JudgeContext, ProblemTools, Settings, Toolset};
@@ -217,27 +218,39 @@ impl Engine {
         let want =
             if self.settings.workers == 0 { crate::workspace::default_worker_count() } else { self.settings.workers };
         let workers = want.min(tasks.len()).max(1);
-        // Two phases: first compile everything on all logical processors
-        // (fast, and nothing is being timed yet), then judge on the pinned
-        // workers without compilers competing for the CPU.
         let needs_compile = self.contest.problems.iter().any(|p| p.kind != crate::model::ProblemKind::Answer);
-        let builders = if needs_compile {
-            std::env::var("OIJ_BUILDERS")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4))
-                .clamp(1, 32)
+        let overlap = needs_compile && self.settings.overlap_compile;
+        let logical = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+        // Overlapped: compilers get the cores the pinned judging workers do
+        // not use, so they never share a core with a timed program; idle
+        // judging workers compile too. Two-phase: compile everything on all
+        // logical processors first, then judge.
+        let (builders, builder_mask) = if !needs_compile {
+            (0, 0)
+        } else if overlap {
+            let mask = if self.settings.pin_cores { crate::workspace::spare_cpu_mask(workers) } else { 0 };
+            let n = if mask != 0 {
+                mask.count_ones() as usize
+            } else if self.settings.pin_cores && workers <= sandbox::performance_core_masks().len() {
+                0 // every core judges; the judging workers compile themselves
+            } else {
+                logical.saturating_sub(workers)
+            };
+            (n, mask)
         } else {
-            0
+            (logical, 0)
         };
+        let builders = std::env::var("OIJ_BUILDERS").ok().and_then(|v| v.parse().ok()).unwrap_or(builders).min(32);
         let t_setup = std::time::Instant::now();
-        let ws = Workspace::with_builders(workers, self.settings.pin_cores, builders)
+        let ws = Workspace::with_builders(workers, self.settings.pin_cores, builders, builder_mask)
             .context("setting up sandbox workers")?;
         if std::env::var_os("OIJ_DEBUG").is_some() {
             eprintln!(
-                "sandbox setup: {} workers + {} builders in {} ms",
+                "sandbox setup: {} workers + {} builders (mask {:#x}, overlap {}) in {} ms",
                 workers,
                 builders,
+                builder_mask,
+                overlap,
                 t_setup.elapsed().as_millis()
             );
         }
@@ -263,9 +276,9 @@ impl Engine {
             cancel,
         };
         let order = tasks;
-        if !ws.builders.is_empty() {
-            // Helper programs first (they are slow to build), then submissions.
-            let mut helpers: Vec<&Problem> = Vec::new();
+        // Helper programs first (they are slow to build), then submissions.
+        let mut helpers: Vec<&Problem> = Vec::new();
+        if needs_compile && !ws.builders.is_empty() {
             for t in &order {
                 if let Some(p) = self.contest.problem(&t.problem) {
                     if (p.checker.is_some() || p.interactor.is_some()) && !helpers.iter().any(|h| h.name == p.name) {
@@ -273,14 +286,114 @@ impl Engine {
                     }
                 }
             }
-            let total = helpers.len() + order.len();
-            let next = AtomicUsize::new(0);
-            let done = AtomicUsize::new(0);
-            sink(Event::Compiled { done: 0, total });
+        }
+        let compile_total = helpers.len() + order.len();
+        let compiled = AtomicUsize::new(0);
+        let note_compiled =
+            || sink(Event::Compiled { done: compiled.fetch_add(1, Ordering::Relaxed) + 1, total: compile_total });
+        let judge_one = |worker: &Worker, task: &Task| {
+            let Some(problem) = self.contest.problem(&task.problem) else { return };
+            sink(Event::TaskStarted { worker: worker.index(), task: task.clone() });
+            let mut on_case = |si: usize, c: &CaseResult| {
+                sink(Event::Case { worker: worker.index(), task: task.clone(), subtask: si, case: c.clone() })
+            };
+            if let Some(result) = judge_problem(&ctx, worker, &task.contestant, problem, &mut on_case) {
+                sink(Event::TaskDone { worker: worker.index(), result });
+            }
+        };
+        let prebuild = |worker: &Worker, task: &Task| {
+            if let Some(problem) = self.contest.problem(&task.problem) {
+                crate::judge::prebuild(&ctx, worker, &task.contestant, problem);
+            }
+        };
+
+        if overlap {
+            sink(Event::Compiled { done: 0, total: compile_total });
+            sink(Event::Started { total: order.len(), workers: ws.workers.len() });
+            let n = order.len();
+            let sched = Mutex::new(Schedule { next_helper: 0, next_build: 0, building: 0, ready: VecDeque::new() });
+            let wake = Condvar::new();
             std::thread::scope(|s| {
                 for builder in &ws.builders {
-                    let (ctx, order, helpers, next, done, problem_tools) =
-                        (&ctx, &order, &helpers, &next, &done, &problem_tools);
+                    let (sched, wake, helpers, order) = (&sched, &wake, &helpers, &order);
+                    let (prebuild, problem_tools, note_compiled) = (&prebuild, &problem_tools, &note_compiled);
+                    s.spawn(move || {
+                        while !cancel.load(Ordering::Relaxed) {
+                            let job = {
+                                let mut q = sched.lock();
+                                if q.next_helper < helpers.len() {
+                                    q.next_helper += 1;
+                                    Err(q.next_helper - 1)
+                                } else if q.next_build < n {
+                                    q.next_build += 1;
+                                    q.building += 1;
+                                    Ok(q.next_build - 1)
+                                } else {
+                                    break;
+                                }
+                            };
+                            match job {
+                                Err(h) => {
+                                    problem_tools(builder, helpers[h]);
+                                }
+                                Ok(i) => {
+                                    prebuild(builder, &order[i]);
+                                    let mut q = sched.lock();
+                                    q.building -= 1;
+                                    q.ready.push_back(i);
+                                    wake.notify_all();
+                                }
+                            }
+                            note_compiled();
+                        }
+                        // Let waiting judges see that nothing more is coming.
+                        let _q = sched.lock();
+                        wake.notify_all();
+                    });
+                }
+                for worker in &ws.workers {
+                    let (sched, wake, order) = (&sched, &wake, &order);
+                    let (prebuild, judge_one, note_compiled) = (&prebuild, &judge_one, &note_compiled);
+                    s.spawn(move || loop {
+                        let job = {
+                            let mut q = sched.lock();
+                            loop {
+                                if cancel.load(Ordering::Relaxed) {
+                                    break None;
+                                }
+                                if let Some(i) = q.ready.pop_front() {
+                                    break Some((i, false));
+                                }
+                                // Nothing compiled is waiting: compile the next one here rather than idle.
+                                if q.next_build < n {
+                                    q.next_build += 1;
+                                    break Some((q.next_build - 1, true));
+                                }
+                                if q.building == 0 {
+                                    break None;
+                                }
+                                wake.wait_for(&mut q, std::time::Duration::from_millis(200));
+                            }
+                        };
+                        let Some((i, compile)) = job else { break };
+                        if compile {
+                            prebuild(worker, &order[i]);
+                            note_compiled();
+                        }
+                        judge_one(worker, &order[i]);
+                    });
+                }
+            });
+            return Ok(());
+        }
+
+        if !ws.builders.is_empty() {
+            let next = AtomicUsize::new(0);
+            sink(Event::Compiled { done: 0, total: compile_total });
+            std::thread::scope(|s| {
+                for builder in &ws.builders {
+                    let (order, helpers, next, problem_tools) = (&order, &helpers, &next, &problem_tools);
+                    let (prebuild, note_compiled) = (&prebuild, &note_compiled);
                     s.spawn(move || {
                         while !cancel.load(Ordering::Relaxed) {
                             let i = next.fetch_add(1, Ordering::Relaxed);
@@ -288,11 +401,9 @@ impl Engine {
                                 problem_tools(builder, helpers[i]);
                             } else {
                                 let Some(task) = order.get(i - helpers.len()) else { break };
-                                if let Some(problem) = self.contest.problem(&task.problem) {
-                                    crate::judge::prebuild(ctx, builder, &task.contestant, problem);
-                                }
+                                prebuild(builder, task);
                             }
-                            sink(Event::Compiled { done: done.fetch_add(1, Ordering::Relaxed) + 1, total });
+                            note_compiled();
                         }
                     });
                 }
@@ -306,24 +417,27 @@ impl Engine {
         let next_task = AtomicUsize::new(0);
         std::thread::scope(|s| {
             for worker in &ws.workers {
-                let (ctx, order, next_task) = (&ctx, &order, &next_task);
-                s.spawn(move || loop {
-                    if cancel.load(Ordering::Relaxed) {
-                        break;
-                    }
-                    let i = next_task.fetch_add(1, Ordering::Relaxed);
-                    let Some(task) = order.get(i) else { break };
-                    let Some(problem) = self.contest.problem(&task.problem) else { continue };
-                    sink(Event::TaskStarted { worker: worker.index(), task: task.clone() });
-                    let mut on_case = |si: usize, c: &CaseResult| {
-                        sink(Event::Case { worker: worker.index(), task: task.clone(), subtask: si, case: c.clone() })
-                    };
-                    if let Some(result) = judge_problem(ctx, worker, &task.contestant, problem, &mut on_case) {
-                        sink(Event::TaskDone { worker: worker.index(), result });
+                let (order, next_task, judge_one) = (&order, &next_task, &judge_one);
+                s.spawn(move || {
+                    while !cancel.load(Ordering::Relaxed) {
+                        let Some(task) = order.get(next_task.fetch_add(1, Ordering::Relaxed)) else { break };
+                        judge_one(worker, task);
                     }
                 });
             }
         });
         Ok(())
     }
+}
+
+/// Shared state of the overlapped compile / judge pipeline.
+struct Schedule {
+    /// Next helper (checker / interactor) to build.
+    next_helper: usize,
+    /// Next task to compile.
+    next_build: usize,
+    /// Tasks being compiled by compile workers.
+    building: usize,
+    /// Compiled tasks waiting for a judging worker.
+    ready: VecDeque<usize>,
 }

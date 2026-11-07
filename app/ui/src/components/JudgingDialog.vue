@@ -7,8 +7,12 @@ import { state, judging, log } from "../store";
 
 const { t } = useI18n();
 const p = computed(() => state.progress);
-/** Compile phase runs before judging starts. */
+/** Two-phase mode: the compile phase runs before judging starts. */
 const compiling = computed(() => !!p.value && p.value.running && !p.value.total && p.value.compile_total > 0);
+/** Overlapped mode: still compiling while judging. */
+const alsoCompiling = computed(
+  () => !!p.value && p.value.running && !!p.value.total && p.value.compile_done < p.value.compile_total,
+);
 const pct = computed(() => {
   const v = p.value;
   if (!v) return 0;
@@ -55,6 +59,7 @@ function verdictText(v: string) {
           <n-progress type="line" :percentage="pct" :processing="judging" :height="12" :show-indicator="false" color="#D97757" style="flex: 1" />
           <span class="tabular nums">
             {{ compiling ? t("judging.compiling", { done: p.compile_done, total: p.compile_total }) : t("progress.done", { done: p.done, total: p.total }) }}
+            <template v-if="alsoCompiling"> · {{ t("judging.compiledShort", { done: p.compile_done, total: p.compile_total }) }}</template>
           </span>
         </div>
         <div class="sub">

@@ -81,7 +81,7 @@ const zh = {
   settings: {
     title: "设置", compilers: "编译器", detect: "自动检测", path: "路径", args: "编译参数", version: "版本",
     noCompiler: "没有找到编译器。请安装 MinGW，或使用自带编译器的便携版。", judging: "评测",
-    workers: "并行线程数（0 = 自动，推荐 {n}）", pin: "将线程绑定到性能核（计时更稳定）",
+    workers: "并行线程数（0 = 自动，推荐 {n}）", pin: "将线程绑定到性能核（计时更稳定）", overlap: "编译与评测同时进行（编译器只用评测之外的核心）",
     patchStack: "栈空间 = 内存限制（避免 Windows 默认 2MB 栈导致递归爆栈）", outputLimit: "输出上限 (MiB)",
     compileTime: "编译时间限制 (ms)", compileMemory: "编译内存限制 (MiB)", checkerTime: "校验器时间限制 (ms)",
     checkerMemory: "校验器内存限制 (MiB)", language: "界面语言", selftest: "沙箱自检",
@@ -122,7 +122,7 @@ const zh = {
     stale: "{n} 项待评测", show: "点击查看评测窗口",
   },
   judging: {
-    title: "评测", compiling: "编译中 {done}/{total}", background: "后台运行", stop: "停止", close: "关闭", log: "评测记录", empty: "等待评测结果…",
+    title: "评测", compiling: "编译中 {done}/{total}", compiledShort: "已编译 {done}/{total}", background: "后台运行", stop: "停止", close: "关闭", log: "评测记录", empty: "等待评测结果…",
     point: "测试点 {n}", total: "总分", follow: "自动滚动",
   },
   msg: {
@@ -212,7 +212,7 @@ const en: typeof zh = {
   settings: {
     title: "Settings", compilers: "Compilers", detect: "Detect", path: "Path", args: "Arguments", version: "Version",
     noCompiler: "No compiler found. Install MinGW or use the portable bundle with a compiler.", judging: "Judging",
-    workers: "Parallel workers (0 = auto, recommended {n})", pin: "Pin workers to performance cores (stabler timing)",
+    workers: "Parallel workers (0 = auto, recommended {n})", pin: "Pin workers to performance cores (stabler timing)", overlap: "Compile and judge at the same time (compilers use only the cores not used for timing)",
     patchStack: "Stack size = memory limit (avoids Windows' default 2 MiB stack)", outputLimit: "Output limit (MiB)",
     compileTime: "Compile time limit (ms)", compileMemory: "Compile memory limit (MiB)",
     checkerTime: "Checker time limit (ms)", checkerMemory: "Checker memory limit (MiB)", language: "Language",
@@ -254,7 +254,7 @@ const en: typeof zh = {
     stale: "{n} to judge", show: "Click to show the judging window",
   },
   judging: {
-    title: "Judging", compiling: "Compiling {done}/{total}", background: "Run in background", stop: "Stop", close: "Close", log: "Log", empty: "Waiting for results…",
+    title: "Judging", compiling: "Compiling {done}/{total}", compiledShort: "compiled {done}/{total}", background: "Run in background", stop: "Stop", close: "Close", log: "Log", empty: "Waiting for results…",
     point: "test point {n}", total: "total", follow: "Auto scroll",
   },
   msg: {

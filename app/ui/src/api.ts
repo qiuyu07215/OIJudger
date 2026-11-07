@@ -24,6 +24,7 @@ export interface AppSettings {
   compilers: CompilerConfig[];
   workers: number;
   pin_cores: boolean;
+  overlap_compile: boolean;
   patch_stack: boolean;
   output_limit_mb: number;
   compile_time_ms: number;

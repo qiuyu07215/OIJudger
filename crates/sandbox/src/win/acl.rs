@@ -8,7 +8,8 @@ use windows_sys::Win32::Security::Authorization::{
     NO_MULTIPLE_TRUSTEE, REVOKE_ACCESS, SE_FILE_OBJECT, TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
 };
 use windows_sys::Win32::Security::{
-    EqualSid, GetAce, ACCESS_ALLOWED_ACE, ACL, DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
+    EqualSid, GetAce, InitializeAcl, ACCESS_ALLOWED_ACE, ACL, ACL_REVISION, DACL_SECURITY_INFORMATION,
+    LABEL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, UNPROTECTED_DACL_SECURITY_INFORMATION,
 };
 
 use super::util::{wide, Sid};
@@ -82,6 +83,53 @@ fn apply(path: &Path, sid: &Sid, access: u32, mode: i32, inherit: bool) -> Resul
 /// everything created below a directory.
 pub fn grant(path: &Path, sid: &Sid, access: u32, inherit: bool) -> Result<()> {
     apply(path, sid, access, GRANT_ACCESS as i32, inherit)
+}
+
+/// Drop every explicit and stale inherited ACE of `path`, so it only has
+/// what its current parent folder passes down (like `icacls /reset`), and
+/// remove its mandatory integrity label. Used after moving a file a sandboxed
+/// process created: a move keeps the old inherited ACEs and the Low label,
+/// and Windows starts a program from a Low-labelled file at Low integrity.
+pub fn reset_inherited(path: &Path) -> Result<()> {
+    let wpath = wide(path.as_os_str());
+    // An empty (not null!) DACL; with UNPROTECTED the parent's inheritable
+    // ACEs are merged in.
+    let mut buf = [0u64; 8];
+    unsafe {
+        if InitializeAcl(buf.as_mut_ptr() as *mut ACL, std::mem::size_of_val(&buf) as u32, ACL_REVISION) == 0 {
+            return Err(Error::os("InitializeAcl", windows_sys::Win32::Foundation::GetLastError()));
+        }
+        let rc = SetNamedSecurityInfoW(
+            wpath.as_ptr(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION | UNPROTECTED_DACL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            buf.as_mut_ptr() as *mut ACL,
+            std::ptr::null(),
+        );
+        if rc != ERROR_SUCCESS {
+            return Err(Error::os(format!("SetNamedSecurityInfo({})", path.display()), rc));
+        }
+        // An empty SACL under LABEL_SECURITY_INFORMATION removes the label.
+        let mut sacl = [0u64; 8];
+        if InitializeAcl(sacl.as_mut_ptr() as *mut ACL, std::mem::size_of_val(&sacl) as u32, ACL_REVISION) == 0 {
+            return Err(Error::os("InitializeAcl", windows_sys::Win32::Foundation::GetLastError()));
+        }
+        let rc = SetNamedSecurityInfoW(
+            wpath.as_ptr(),
+            SE_FILE_OBJECT,
+            LABEL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null(),
+            sacl.as_mut_ptr() as *mut ACL,
+        );
+        if rc != ERROR_SUCCESS {
+            return Err(Error::os(format!("SetNamedSecurityInfo(label, {})", path.display()), rc));
+        }
+    }
+    Ok(())
 }
 
 /// Remove every ACE for `sid` from `path`.
