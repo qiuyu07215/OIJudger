@@ -30,7 +30,7 @@ pub use status::describe_exit_code;
 #[cfg(windows)]
 pub use win::cpu::{cores as cpu_cores, performance_core_masks, Core as CpuCore};
 #[cfg(windows)]
-pub use win::{init_process, pipe, Child, Container, Toolchain};
+pub use win::{init_process, integrity_level, pipe, Child, Container, Toolchain, INTEGRITY_MEDIUM};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

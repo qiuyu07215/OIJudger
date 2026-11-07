@@ -105,6 +105,13 @@ pub enum Command {
 
 pub fn run(cli: Cli) -> Result<i32> {
     sandbox::init_process();
+    if sandbox::integrity_level().is_some_and(|l| l < sandbox::INTEGRITY_MEDIUM) {
+        anyhow::bail!(
+            "OIJudger is running at Low integrity (its folder probably carries a Low integrity label, common for \
+             folders managed by sandboxing tools); it cannot write results or set up the judging sandbox there. \
+             Extract OIJudger into a normal folder and run it from there."
+        );
+    }
     let settings = AppSettings::load();
     match cli.command {
         Command::Init { dir, time, memory, force } => {

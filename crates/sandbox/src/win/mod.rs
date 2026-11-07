@@ -72,6 +72,48 @@ const ALL_APP_PACKAGES: &str = "S-1-15-2-1";
 
 /// Process wide setup; call once at startup. Children inherit the error
 /// mode, so a crashing program never pops up a Windows Error Reporting dialog.
+/// Mandatory integrity level of this process (the RID of its integrity
+/// SID: 0x1000 Low, 0x2000 Medium, 0x3000 High), or `None` if it cannot be
+/// read. A program started from a file carrying a Low integrity label runs
+/// at Low, which breaks WebView2 and the sandbox (it cannot manage
+/// AppContainer profiles or change ACLs).
+pub fn integrity_level() -> Option<u32> {
+    use windows_sys::Win32::Security::{
+        GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, TokenIntegrityLevel, TOKEN_MANDATORY_LABEL,
+        TOKEN_QUERY,
+    };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+    unsafe {
+        let mut token: HANDLE = std::ptr::null_mut();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+            return None;
+        }
+        let token = owned(token, "OpenProcessToken").ok()?;
+        let mut buf = [0u64; 16];
+        let mut len = 0u32;
+        let ok = GetTokenInformation(
+            token.as_raw_handle() as HANDLE,
+            TokenIntegrityLevel,
+            buf.as_mut_ptr() as *mut _,
+            std::mem::size_of_val(&buf) as u32,
+            &mut len,
+        );
+        if ok == 0 {
+            return None;
+        }
+        let label = &*(buf.as_ptr() as *const TOKEN_MANDATORY_LABEL);
+        let sid = label.Label.Sid;
+        let count = *GetSidSubAuthorityCount(sid);
+        if count == 0 {
+            return None;
+        }
+        Some(*GetSidSubAuthority(sid, count as u32 - 1))
+    }
+}
+
+/// Medium integrity: the normal level of a desktop program.
+pub const INTEGRITY_MEDIUM: u32 = 0x2000;
+
 pub fn init_process() {
     unsafe {
         SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);

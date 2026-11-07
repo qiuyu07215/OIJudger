@@ -215,6 +215,13 @@ impl Workspace {
     /// worker `i` is pinned to the i-th performance core when `pin` is set;
     /// compile workers run on `builder_affinity` (0 = any processor).
     pub fn with_builders(count: usize, pin: bool, builders: usize, builder_affinity: usize) -> Result<Workspace> {
+        if sandbox::integrity_level().is_some_and(|l| l < sandbox::INTEGRITY_MEDIUM) {
+            anyhow::bail!(
+                "OIJudger is running at Low integrity, so it cannot set up the judging sandbox. \
+                 This happens when the program's folder carries a Low integrity label (common for folders \
+                 managed by sandboxing tools). Extract OIJudger into a normal folder and run it from there."
+            );
+        }
         let count = if count == 0 { default_worker_count() } else { count };
         let base = work_base();
         cleanup_stale(&base);

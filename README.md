@@ -72,6 +72,10 @@ cases = [{ input = "sum/2.in", output = "sum/2.out" }, { input = "sum/3.in", out
 
 交互题：`kind = "interactive"`，并配置 `grader = { header_path, header_name, grader_path }`（NOI 风格）或 `interactor = "guess/interactor.cpp"`（testlib 交互器）。提交答案题：`kind = "answer"`，`answer_ext = "out"`。通信题：`kind = "communication"`，`communication = { sources = [...], interfaces = [...] }`；加上 `multi_program = true` 则每个源文件编译为独立程序，`interfaces` 中的 `grader.cpp` 单独编译运行并负责启动选手程序（与 LemonLime 的多程序通信题相同；grader 与选手程序在同一个沙箱内，进程数上限为程序数 + 1）。
 
+## 打不开 / 一打开就退出？
+
+如果程序放在带“低完整性”标签的文件夹里（一些沙箱或安全工具管理的目录会这样设置），Windows 会以受限权限运行它：界面无法创建，评测沙箱也无法使用。OIJudger 会弹窗说明这一情况。把压缩包重新解压到普通文件夹（例如 `D:\OIJudger` 或桌面）即可。
+
 ## 关于 Windows Defender
 
 实时防护会扫描每个新生成的可执行文件（每个约 0.1～1 秒，大量编译时会排队）。OIJudger 已把每个程序的扫描减到一次，但仍是编译耗时的主要部分之一。如需更快，可以（以管理员身份）把评测临时目录加入排除项：

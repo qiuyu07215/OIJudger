@@ -203,6 +203,10 @@ cargo build --release -p oijudger -p oij --features oijudger/custom-protocol
 
 ### 其他
 
+- **低完整性文件夹**：
+  - 从带 Low 完整性标签的文件夹启动的程序会以 Low 级别运行。这时 WebView2 报 `0x800700AA`，Tauri 在启动阶段 panic 退出，GUI 没有控制台，用户只看到“闪退”。
+  - 现在启动时会检查 `sandbox::integrity_level()`：GUI 弹窗说明，CLI 报错退出。
+  - GUI 另外装了 panic hook，任何启动错误都会弹窗显示，不再静默退出。
 - 文件操作偶尔会被 Defender 或刚退出的进程短暂占用，所以用 `retry_io` 重试；旧临时目录在后台线程删除。
 - 统一使用 LF 换行（`.gitattributes`）。用脚本批量改文件时注意不要写入 CRLF。
 
