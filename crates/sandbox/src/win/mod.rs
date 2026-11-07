@@ -76,6 +76,7 @@ pub fn init_process() {
     unsafe {
         SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
     }
+    cpu::tsc_hz();
 }
 
 /// An AppContainer identity. Every judging worker owns one, so programs run
@@ -86,8 +87,39 @@ pub struct Container {
 }
 
 impl Container {
-    /// Create (or reuse) the AppContainer profile `name`.
+    /// Create (or reuse) the AppContainer profile `name` for running
+    /// untrusted programs. The container's profile folder is locked, so the
+    /// only writable location is what [`Container::grant_dir`] grants.
     pub fn open(name: &str) -> Result<Container> {
+        let c = Self::open_profile(name)?;
+        lock_profile_folder(name, c.sid.as_ref().unwrap())?;
+        Ok(c)
+    }
+
+    /// Like [`Container::open`], but keeps the profile's TEMP folder writable
+    /// (and empties it). For compilers: on Windows GCC can only use TEMP for
+    /// intermediate files, and CreateProcess forces TEMP into the profile.
+    /// Never run contestant programs in such a container.
+    pub fn open_scratch(name: &str) -> Result<Container> {
+        let c = Self::open_profile(name)?;
+        if let Some(ac) = profile_folder(name) {
+            let sid = c.sid.as_ref().unwrap();
+            if ac.exists() && !acl::has_grant(&ac, sid, acl::ACCESS_FULL)? {
+                acl::grant(&ac, sid, acl::ACCESS_FULL, true)?;
+            }
+        }
+        c.wipe_profile_temp();
+        Ok(c)
+    }
+
+    /// Delete everything in the container profile's TEMP folder.
+    pub fn wipe_profile_temp(&self) {
+        if let Some(ac) = profile_folder(&self.name) {
+            wipe_dir(&ac.join("Temp"));
+        }
+    }
+
+    fn open_profile(name: &str) -> Result<Container> {
         let wname = wide(name);
         let mut sid: PSID = std::ptr::null_mut();
         let hr = unsafe {
@@ -109,7 +141,6 @@ impl Container {
             return Err(Error::Other(format!("CreateAppContainerProfile({name}) failed: 0x{hr:08X}")));
         }
         let sid = unsafe { Sid::from_raw(sid, SidFree::FreeSid) };
-        lock_profile_folder(name, &sid)?;
         Ok(Container { name: name.to_string(), sid: Some(sid) })
     }
 
@@ -168,30 +199,29 @@ impl Container {
     }
 }
 
+fn profile_folder(name: &str) -> Option<std::path::PathBuf> {
+    let local = std::env::var_os("LOCALAPPDATA")?;
+    Some(Path::new(&local).join("Packages").join(name.to_lowercase()).join("AC"))
+}
+
+fn wipe_dir(dir: &Path) {
+    if let Ok(inner) = std::fs::read_dir(dir) {
+        for f in inner.flatten() {
+            let _ = std::fs::remove_dir_all(f.path()).or_else(|_| std::fs::remove_file(f.path()));
+        }
+    }
+}
+
 /// Windows gives every AppContainer a private, writable profile folder
 /// (`%LOCALAPPDATA%\Packages\<name>\AC`, which also becomes the child's
 /// TEMP). It survives between runs, so one contestant's program could leave
 /// data for the next one. Remove the container's access to it.
 fn lock_profile_folder(name: &str, sid: &Sid) -> Result<()> {
-    let Some(local) = std::env::var_os("LOCALAPPDATA") else { return Ok(()) };
-    let root = Path::new(&local).join("Packages").join(name.to_lowercase());
-    let ac = root.join("AC");
+    let Some(ac) = profile_folder(name) else { return Ok(()) };
     if !ac.exists() {
         return Ok(());
     }
-    // Leftovers from older runs.
-    if let Ok(entries) = std::fs::read_dir(&ac) {
-        for e in entries.flatten() {
-            let p = e.path();
-            if p.file_name().is_some_and(|n| n == "Temp") {
-                if let Ok(inner) = std::fs::read_dir(&p) {
-                    for f in inner.flatten() {
-                        let _ = std::fs::remove_dir_all(f.path()).or_else(|_| std::fs::remove_file(f.path()));
-                    }
-                }
-            }
-        }
-    }
+    wipe_dir(&ac.join("Temp"));
     if acl::has_grant(&ac, sid, 0x2)? {
         acl::revoke(&ac, sid)?;
     }
@@ -509,7 +539,35 @@ impl Running {
         h.as_raw_handle() as HANDLE
     }
 
+    /// Precise CPU time of the main process from its cycle count; `None`
+    /// when unavailable (then job accounting is used).
+    fn precise_cpu_ms(&self) -> Option<u64> {
+        use windows_sys::Win32::System::WindowsProgramming::QueryProcessCycleTime;
+        let hz = cpu::tsc_hz();
+        if hz <= 0.0 || self.limits.max_processes > 1 {
+            return None;
+        }
+        let mut cycles: u64 = 0;
+        if unsafe { QueryProcessCycleTime(self.h(&self.process), &mut cycles) } == 0 {
+            return None;
+        }
+        Some((cycles as f64 * 1000.0 / hz).round() as u64)
+    }
+
+    /// (CPU ms, peak memory bytes). CPU time is the larger of the precise
+    /// cycle-based value and job accounting, so tick granularity can never
+    /// hide time that was really used.
     fn accounting(&self) -> (u64, u64) {
+        let (job_cpu, peak) = self.job_accounting();
+        match self.precise_cpu_ms() {
+            // Job accounting lags by up to one 15.6 ms tick; trust the precise
+            // value unless the job reports clearly more (other processes).
+            Some(p) if job_cpu <= p + 32 => (p, peak),
+            _ => (job_cpu, peak),
+        }
+    }
+
+    fn job_accounting(&self) -> (u64, u64) {
         unsafe {
             let mut acc: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = std::mem::zeroed();
             QueryInformationJobObject(

@@ -73,3 +73,38 @@ pub fn performance_core_masks() -> Vec<usize> {
         .map(|c| c.mask & c.mask.wrapping_neg()) // lowest logical processor of the core
         .collect()
 }
+
+/// Frequency of the invariant time stamp counter, calibrated once against
+/// the performance counter. `QueryProcessCycleTime` counts TSC ticks while
+/// the process runs, so dividing by this gives CPU time with microsecond
+/// resolution (job accounting only advances in 15.6 ms timer ticks).
+pub fn tsc_hz() -> f64 {
+    use std::sync::OnceLock;
+    static HZ: OnceLock<f64> = OnceLock::new();
+    *HZ.get_or_init(|| {
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            use core::arch::x86_64::_rdtsc;
+            let mut best = 0.0f64;
+            // Take the median-ish of a few short samples to dodge preemption.
+            let mut samples = Vec::new();
+            for _ in 0..5 {
+                let t0 = std::time::Instant::now();
+                let c0 = _rdtsc();
+                while t0.elapsed() < std::time::Duration::from_millis(10) {
+                    std::hint::spin_loop();
+                }
+                let c1 = _rdtsc();
+                let dt = t0.elapsed().as_secs_f64();
+                samples.push((c1 - c0) as f64 / dt);
+            }
+            samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            if let Some(m) = samples.get(samples.len() / 2) {
+                best = *m;
+            }
+            best
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        0.0
+    })
+}

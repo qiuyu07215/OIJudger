@@ -1,0 +1,27 @@
+[package]
+name = "oij"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "OIJudger application layer: project handling, command line interface, self test"
+
+[lib]
+name = "oij"
+path = "src/lib.rs"
+
+[[bin]]
+name = "oijudger-cli"
+path = "src/main.rs"
+
+[dependencies]
+judge-core.workspace = true
+store.workspace = true
+sandbox.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+parking_lot.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

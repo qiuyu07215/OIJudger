@@ -1,0 +1,42 @@
+{
+  "alice": {
+    "sum": 100,
+    "fio": 100,
+    "real": 100,
+    "guess": 100,
+    "ans": 100,
+    "add": 100
+  },
+  "bob": {
+    "sum": 60,
+    "fio": 0,
+    "real": 50,
+    "guess": 50,
+    "ans": 50,
+    "add": 100
+  },
+  "carol": {
+    "sum": 0,
+    "fio": 0,
+    "real": 0,
+    "guess": 0,
+    "ans": 0,
+    "add": 0
+  },
+  "dave": {
+    "sum": 0,
+    "fio": 0,
+    "real": 0,
+    "guess": 0,
+    "ans": 0,
+    "add": 0
+  },
+  "eve": {
+    "sum": 100,
+    "fio": 0,
+    "real": 0,
+    "guess": 0,
+    "ans": 0,
+    "add": 0
+  }
+}

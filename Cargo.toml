@@ -2,6 +2,9 @@
 resolver = "2"
 members = [
     "crates/sandbox",
+    "crates/judge-core",
+    "crates/store",
+    "crates/cli",
 ]
 
 [workspace.package]
@@ -35,6 +38,7 @@ store = { path = "crates/store" }
 analysis = { path = "crates/analysis" }
 export = { path = "crates/export" }
 lemon-import = { path = "crates/lemon-import" }
+oij = { path = "crates/cli" }
 
 [profile.release]
 opt-level = 3

@@ -1,0 +1,114 @@
+title = "OIJudger Demo"
+
+[[problem]]
+name = "sum"
+title = "A + B"
+stdio = true
+
+[[problem.subtask]]
+score = 30
+time_ms = 1000
+memory_mb = 256
+cases = [{ input = "sum/sum1.in", output = "sum/sum1.out" }]
+
+[[problem.subtask]]
+score = 30
+time_ms = 1000
+memory_mb = 256
+depends = [1]
+cases = [{ input = "sum/sum2.in", output = "sum/sum2.out" }]
+
+[[problem.subtask]]
+score = 40
+time_ms = 1000
+memory_mb = 256
+depends = [2]
+cases = [{ input = "sum/sum3.in", output = "sum/sum3.out" }, { input = "sum/sum4.in", output = "sum/sum4.out" }]
+
+[[problem]]
+name = "fio"
+title = "File IO"
+
+[[problem.subtask]]
+score = 50
+time_ms = 1000
+memory_mb = 256
+cases = [{ input = "fio/fio1.in", output = "fio/fio1.out" }]
+
+[[problem.subtask]]
+score = 50
+time_ms = 1000
+memory_mb = 256
+cases = [{ input = "fio/fio2.in", output = "fio/fio2.out" }]
+
+[[problem]]
+name = "real"
+title = "Square root (testlib checker)"
+stdio = true
+checker = { path = "real/checker.cpp", kind = "testlib" }
+
+[[problem.subtask]]
+score = 50
+time_ms = 1000
+memory_mb = 256
+cases = [{ input = "real/real1.in", output = "real/real1.ans" }]
+
+[[problem.subtask]]
+score = 50
+time_ms = 1000
+memory_mb = 256
+cases = [{ input = "real/real2.in", output = "real/real2.ans" }]
+
+[[problem]]
+name = "guess"
+title = "Guess the number (interactor)"
+kind = "interactive"
+interactor = "guess/interactor.cpp"
+
+[[problem.subtask]]
+score = 50
+time_ms = 1000
+memory_mb = 256
+cases = [{ input = "guess/guess1.in", output = "guess/guess1.ans" }]
+
+[[problem.subtask]]
+score = 50
+time_ms = 1000
+memory_mb = 256
+cases = [{ input = "guess/guess2.in", output = "guess/guess2.ans" }]
+
+[[problem]]
+name = "ans"
+title = "Squares (answer submission)"
+kind = "answer"
+
+[[problem.subtask]]
+score = 50
+time_ms = 1000
+memory_mb = 256
+cases = [{ input = "ans/ans1.in", output = "ans/ans1.out" }]
+
+[[problem.subtask]]
+score = 50
+time_ms = 1000
+memory_mb = 256
+cases = [{ input = "ans/ans2.in", output = "ans/ans2.out" }]
+
+[[problem]]
+name = "add"
+title = "Add (NOI-style grader)"
+kind = "interactive"
+stdio = true
+grader = { header_path = "add/add.h", header_name = "add.h", grader_path = "add/grader.cpp" }
+
+[[problem.subtask]]
+score = 50
+time_ms = 1000
+memory_mb = 256
+cases = [{ input = "add/add1.in", output = "add/add1.out" }]
+
+[[problem.subtask]]
+score = 50
+time_ms = 1000
+memory_mb = 256
+cases = [{ input = "add/add2.in", output = "add/add2.out" }]
