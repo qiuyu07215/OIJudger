@@ -20,6 +20,7 @@ tower-http = { version = "0.6", features = ["compression-gzip", "limit", "set-he
 rust-embed = { version = "8", features = ["interpolate-folder-path"] }
 mime_guess = "2"
 futures-util = { version = "0.3", default-features = false }
+flate2 = "1"
 
 [dev-dependencies]
 sandbox.workspace = true

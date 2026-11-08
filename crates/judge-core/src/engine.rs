@@ -9,7 +9,9 @@ use anyhow::{Context, Result};
 use parking_lot::{Condvar, Mutex};
 
 use crate::compile::{build, BuildOutput, BuildRequest, CompilerConfig, Lang};
-use crate::judge::{judge_problem, JudgeContext, ProblemTools, Settings, Toolset};
+use crate::judge::{
+    has_time_limit_case, judge_problem, recheck_problem, JudgeContext, ProblemTools, Settings, Toolset,
+};
 use crate::model::{Contest, ContestDir, Problem};
 use crate::result::{CaseResult, ProblemResult};
 use crate::workspace::{Worker, Workspace};
@@ -54,6 +56,28 @@ pub enum Event {
     CompilePaused(bool),
     /// Informational message (setup steps, warnings).
     Message(String),
+    /// All tasks are judged; `total` of them with time-limit cases are now
+    /// re-run one at a time (see `Settings::recheck_tle`).
+    RecheckStarted {
+        total: usize,
+    },
+    /// A task re-run by the recheck; `result` replaces the earlier one.
+    Rechecked {
+        worker: usize,
+        result: ProblemResult,
+        previous_label: String,
+        previous_score: f64,
+    },
+}
+
+impl Event {
+    /// The result to save, if this event carries one.
+    pub fn result(&self) -> Option<&ProblemResult> {
+        match self {
+            Event::TaskDone { result, .. } | Event::Rechecked { result, .. } => Some(result),
+            _ => None,
+        }
+    }
 }
 
 pub struct Engine {
@@ -296,6 +320,8 @@ impl Engine {
         }
         let compile_total = helpers.len() + order.len();
         let compiled = AtomicUsize::new(0);
+        // Results with time-limit cases, re-run alone at the end.
+        let recheck: Mutex<Vec<ProblemResult>> = Mutex::new(Vec::new());
         let note_compiled =
             || sink(Event::Compiled { done: compiled.fetch_add(1, Ordering::Relaxed) + 1, total: compile_total });
         let judge_one = |worker: &Worker, task: &Task| {
@@ -305,6 +331,9 @@ impl Engine {
                 sink(Event::Case { worker: worker.index(), task: task.clone(), subtask: si, case: c.clone() })
             };
             if let Some(result) = judge_problem(&ctx, worker, &task.contestant, problem, &mut on_case) {
+                if self.settings.recheck_tle && has_time_limit_case(&result) {
+                    recheck.lock().push(result.clone());
+                }
                 sink(Event::TaskDone { worker: worker.index(), result });
             }
         };
@@ -481,6 +510,7 @@ impl Engine {
             if limit > 0 && std::env::var_os("OIJ_DEBUG").is_some() {
                 eprintln!("cache limit: {} ms spent making room", room_ns.load(Ordering::Relaxed) / 1_000_000);
             }
+            self.recheck(&ws.workers[0], &ctx, std::mem::take(&mut *recheck.lock()), sink, cancel);
             return Ok(());
         }
 
@@ -523,7 +553,62 @@ impl Engine {
                 });
             }
         });
+        self.recheck(&ws.workers[0], &ctx, std::mem::take(&mut *recheck.lock()), sink, cancel);
         Ok(())
+    }
+
+    /// Re-run, one task at a time on one worker while nothing else runs,
+    /// the time-limit cases of `results`.
+    fn recheck(
+        &self,
+        worker: &Worker,
+        ctx: &JudgeContext,
+        mut results: Vec<ProblemResult>,
+        sink: &(dyn Fn(Event) + Sync),
+        cancel: &AtomicBool,
+    ) {
+        if results.is_empty() || cancel.load(Ordering::Relaxed) {
+            return;
+        }
+        results.sort_by(|a, b| (&a.contestant, &a.problem).cmp(&(&b.contestant, &b.problem)));
+        sink(Event::RecheckStarted { total: results.len() });
+        sink(Event::Message(format!(
+            "Re-running the time-limit cases of {} task(s) one at a time (parallel judging can slow programs down)",
+            results.len()
+        )));
+        let t0 = std::time::Instant::now();
+        let mut changed = 0;
+        for prev in results {
+            if cancel.load(Ordering::Relaxed) {
+                return;
+            }
+            let Some(problem) = self.contest.problem(&prev.problem) else { continue };
+            let task = Task { contestant: prev.contestant.clone(), problem: prev.problem.clone() };
+            sink(Event::TaskStarted { worker: worker.index(), task: task.clone() });
+            let mut on_case = |si: usize, c: &CaseResult| {
+                sink(Event::Case { worker: worker.index(), task: task.clone(), subtask: si, case: c.clone() })
+            };
+            let Some(result) = recheck_problem(ctx, worker, &prev.contestant, problem, &prev, &mut on_case) else {
+                return; // cancelled
+            };
+            if result.score != prev.score {
+                changed += 1;
+                sink(Event::Message(format!(
+                    "Recheck: {} {} {} -> {}",
+                    prev.contestant, prev.problem, prev.score, result.score
+                )));
+            }
+            sink(Event::Rechecked {
+                worker: worker.index(),
+                previous_label: prev.label().to_string(),
+                previous_score: prev.score,
+                result,
+            });
+        }
+        sink(Event::Message(format!(
+            "Recheck finished in {:.1}s: {changed} score(s) changed",
+            t0.elapsed().as_secs_f64()
+        )));
     }
 }
 

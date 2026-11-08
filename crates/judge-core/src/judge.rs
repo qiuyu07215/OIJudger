@@ -35,6 +35,10 @@ pub struct Settings {
     /// Stop at the first case that is not fully accepted (ICPC); the rest
     /// are reported as skipped.
     pub stop_on_failure: bool,
+    /// After a batch, run the time-limit cases again one at a time: judging
+    /// in parallel slows down memory-heavy programs (shared memory
+    /// bandwidth), which LemonLime, judging one program at a time, never sees.
+    pub recheck_tle: bool,
     pub output_limit_mb: u64,
     pub build: BuildLimits,
     pub checker: CheckerLimits,
@@ -52,6 +56,7 @@ impl Default for Settings {
             cache_limit_mb: DEFAULT_CACHE_LIMIT_MB,
             patch_stack: true,
             stop_on_failure: false,
+            recheck_tle: true,
             output_limit_mb: 256,
             build: BuildLimits::default(),
             checker: CheckerLimits::default(),
@@ -163,8 +168,40 @@ pub fn judge_problem(
     problem: &Problem,
     on_case: &mut dyn FnMut(usize, &CaseResult),
 ) -> Option<ProblemResult> {
+    judge_with(ctx, worker, contestant, problem, None, on_case)
+}
+
+/// Judge again, alone, the cases of `previous` that hit the time limit;
+/// other results are kept. A task's remaining time-limit cases are not
+/// re-run once one is still over the limit (the program is slow, not slowed
+/// down). Cases that were skipped because a re-run case failed before are
+/// run now if needed.
+pub fn recheck_problem(
+    ctx: &JudgeContext,
+    worker: &Worker,
+    contestant: &str,
+    problem: &Problem,
+    previous: &ProblemResult,
+    on_case: &mut dyn FnMut(usize, &CaseResult),
+) -> Option<ProblemResult> {
+    judge_with(ctx, worker, contestant, problem, Some(previous), on_case)
+}
+
+/// Does `r` have a case worth re-running alone?
+pub fn has_time_limit_case(r: &ProblemResult) -> bool {
+    r.status == Status::Judged && r.subtasks.iter().flat_map(|s| &s.cases).any(|c| c.verdict == Verdict::TLE)
+}
+
+fn judge_with(
+    ctx: &JudgeContext,
+    worker: &Worker,
+    contestant: &str,
+    problem: &Problem,
+    previous: Option<&ProblemResult>,
+    on_case: &mut dyn FnMut(usize, &CaseResult),
+) -> Option<ProblemResult> {
     let full = problem.full_score();
-    let mut res = match judge_inner(ctx, worker, contestant, problem, on_case) {
+    let mut res = match judge_inner(ctx, worker, contestant, problem, previous, on_case) {
         Ok(Some(r)) => r,
         Ok(None) => return None,
         Err(e) => ProblemResult::empty(contestant, &problem.name, full, Status::SystemError, format!("{e:#}")),
@@ -189,6 +226,7 @@ fn judge_inner(
     worker: &Worker,
     contestant: &str,
     problem: &Problem,
+    previous: Option<&ProblemResult>,
     on_case: &mut dyn FnMut(usize, &CaseResult),
 ) -> Result<Option<ProblemResult>> {
     let full = problem.full_score();
@@ -254,11 +292,14 @@ fn judge_inner(
     let mut subtasks = Vec::with_capacity(problem.subtasks.len());
     let mut time_ms = 0u64;
     let mut stopped = false;
+    // Recheck: earlier case results, and whether a re-run case was still too slow.
+    let previous_case = |si: usize, ci: usize| previous.and_then(|p| p.subtasks.get(si)).and_then(|s| s.cases.get(ci));
+    let mut still_slow = false;
     for (si, st) in problem.subtasks.iter().enumerate() {
         let dep = st.depends.iter().filter_map(|&d| effective.get(d - 1)).fold(1.0f64, |a, &b| a.min(b));
         let mut own = if st.cases.is_empty() { 0.0 } else { 1.0f64 };
         let mut cases = Vec::with_capacity(st.cases.len());
-        for case in &st.cases {
+        for (ci, case) in st.cases.iter().enumerate() {
             if ctx.cancel.load(Ordering::Relaxed) {
                 return Ok(None);
             }
@@ -274,17 +315,28 @@ fn judge_inner(
                 cases.push(case_result(case, Verdict::Skipped, 0.0, ""));
                 continue;
             }
-            let r = match &runner {
-                Runner::Program { exe, keep, procs } => {
-                    run_case(ctx, worker, problem, &tools, exe, keep, *procs, st.score, st, case)
+            let old = previous_case(si, ci);
+            let rerun = match old {
+                None => true,
+                Some(o) => o.verdict == Verdict::Skipped || (o.verdict == Verdict::TLE && !still_slow),
+            };
+            let r = if rerun {
+                let r = match &runner {
+                    Runner::Program { exe, keep, procs } => {
+                        run_case(ctx, worker, problem, &tools, exe, keep, *procs, st.score, st, case)
+                    }
+                    Runner::Answers => answer_case(ctx, worker, contestant, problem, &tools, st.score, case),
                 }
-                Runner::Answers => answer_case(ctx, worker, contestant, problem, &tools, st.score, case),
-            }
-            .unwrap_or_else(|e| case_result(case, Verdict::SystemError, 0.0, format!("{e:#}")));
+                .unwrap_or_else(|e| case_result(case, Verdict::SystemError, 0.0, format!("{e:#}")));
+                still_slow |= old.is_some_and(|o| o.verdict == Verdict::TLE) && r.verdict == Verdict::TLE;
+                on_case(si, &r);
+                r
+            } else {
+                old.cloned().unwrap_or_else(|| case_result(case, Verdict::SystemError, 0.0, ""))
+            };
             own = own.min(r.ratio);
             stopped |= ctx.settings.stop_on_failure && r.ratio < 1.0;
             time_ms += r.time_ms;
-            on_case(si, &r);
             cases.push(r);
         }
         let eff = own.min(dep);
@@ -394,13 +446,23 @@ pub(crate) fn build_request(
     let Some((compiler, _)) = ctx.tools.get(lang) else {
         return Ok(Some(Err(format!("No compiler configured for {lang:?}"))));
     };
+    let compiler = problem_compiler(problem, compiler);
     let mut extra_args = problem.compile_args.clone();
     if ctx.settings.patch_stack {
         // Windows gives programs a 2 MB stack by default; make the stack as
         // large as the memory limit, like on Linux judges.
         extra_args.push_str(&format!(" -Wl,--stack,{}", problem.max_memory_mb() << 20));
     }
-    Ok(Some(Ok(BuildRequest { files, compiler: compiler.clone(), extra_args })))
+    Ok(Some(Ok(BuildRequest { files, compiler, extra_args })))
+}
+
+/// `compiler` with the problem's own arguments, if it sets any for the language.
+fn problem_compiler(problem: &Problem, compiler: &CompilerConfig) -> CompilerConfig {
+    let mut c = compiler.clone();
+    if let Some(args) = problem.compile_flags.get(c.lang) {
+        c.args = args.to_string();
+    }
+    c
 }
 
 /// Score a produced output file (checker or built-in comparator).
@@ -697,7 +759,11 @@ fn prepare_multi(ctx: &JudgeContext, worker: &Worker, contestant: &str, problem:
         };
         let mut files = vec![(main.to_path_buf(), file_name(main), true)];
         files.extend(headers.iter().cloned());
-        let req = BuildRequest { files, compiler: compiler.clone(), extra_args: problem.compile_args.clone() };
+        let req = BuildRequest {
+            files,
+            compiler: problem_compiler(problem, compiler),
+            extra_args: problem.compile_args.clone(),
+        };
         Ok(match build(worker, &req, version, &ctx.dir.build_cache(), &ctx.settings.build)? {
             BuildOutput::Ok { exe, log, lease, .. } => Ok((exe, log, lease)),
             BuildOutput::Failed { log } => Err(log),

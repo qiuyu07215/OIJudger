@@ -141,7 +141,7 @@ async fn info(S(st): S<State>, MaybeUser(acc, _): MaybeUser) -> ApiResult<Json<I
     let now = online::now_ms();
     let contest = c.contest();
     let problems = if problems_visible(&st, acc.as_ref()) {
-        let board = c.scoreboard(Viewer::Public).map(|b| b.problems).unwrap_or_default();
+        let board = c.scoreboard(Viewer::Public).map(|b| b.problems.clone()).unwrap_or_default();
         contest
             .problems
             .iter()
@@ -161,7 +161,15 @@ async fn info(S(st): S<State>, MaybeUser(acc, _): MaybeUser) -> ApiResult<Json<I
                 statement: c
                     .statement(p)
                     .and_then(|f| f.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()))
-                    .map(|e| if e == "htm" { "html".into() } else if e == "markdown" { "md".into() } else { e })
+                    .map(|e| {
+                        if e == "htm" {
+                            "html".into()
+                        } else if e == "markdown" {
+                            "md".into()
+                        } else {
+                            e
+                        }
+                    })
                     .unwrap_or_default(),
                 samples: c
                     .samples(p)
@@ -211,7 +219,11 @@ async fn login(S(st): S<State>, MaybeUser(_, ip): MaybeUser, Json(req): Json<Log
             *e = (0, now);
         }
         if e.0 >= 10 {
-            return Err(ApiError::new(StatusCode::TOO_MANY_REQUESTS, "too_many_attempts", "too many failed logins; wait a minute"));
+            return Err(ApiError::new(
+                StatusCode::TOO_MANY_REQUESTS,
+                "too_many_attempts",
+                "too many failed logins; wait a minute",
+            ));
         }
     }
     let found = st.contest.db.account_for_login(req.username.trim())?;
@@ -269,7 +281,7 @@ async fn me(User(a, _): User) -> Json<AccountView> {
 
 // ---- scoreboard and events -----------------------------------------------------
 
-async fn scoreboard(S(st): S<State>, MaybeUser(acc, _): MaybeUser) -> ApiResult<Json<online::Scoreboard>> {
+async fn scoreboard(S(st): S<State>, MaybeUser(acc, _): MaybeUser, headers: HeaderMap) -> ApiResult<Response> {
     let viewer = match &acc {
         Some(a) if a.role.is_jury() => Viewer::Jury,
         Some(a) => Viewer::Contestant(a.id),
@@ -280,7 +292,27 @@ async fn scoreboard(S(st): S<State>, MaybeUser(acc, _): MaybeUser) -> ApiResult<
             Viewer::Public
         }
     };
-    Ok(Json(st.contest.scoreboard(viewer)?))
+    let gzip = headers.get(header::ACCEPT_ENCODING).and_then(|v| v.to_str().ok()).is_some_and(|v| {
+        v.split(',').any(|e| e.split(';').next().is_some_and(|e| e.trim().eq_ignore_ascii_case("gzip")))
+    });
+    // Off the async workers: a rebuild reads the database. The board is
+    // cached and so are its encoded bytes; the compression layer leaves
+    // responses that already have a Content-Encoding alone.
+    let st2 = st.clone();
+    let (body, gzipped) = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+        let board = st2.contest.scoreboard(viewer)?;
+        st2.encoded_board(&board, gzip)
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("{e}"))??;
+    let mut res = body.into_response();
+    let h = res.headers_mut();
+    h.insert(header::CONTENT_TYPE, header::HeaderValue::from_static("application/json"));
+    h.insert(header::VARY, header::HeaderValue::from_static("accept-encoding"));
+    if gzipped {
+        h.insert(header::CONTENT_ENCODING, header::HeaderValue::from_static("gzip"));
+    }
+    Ok(res)
 }
 
 /// Server-sent events: notices relevant to the viewer. Clients refetch
@@ -312,7 +344,8 @@ async fn events(
     let stop = async move {
         let _ = closing.wait_for(|c| *c).await;
     };
-    Sse::new(futures_util::StreamExt::take_until(hello.chain(stream), stop)).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
+    Sse::new(futures_util::StreamExt::take_until(hello.chain(stream), stop))
+        .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
 }
 
 // ---- problem files --------------------------------------------------------------
@@ -456,13 +489,7 @@ fn submission_view(st: &State, s: &Submission, names: &HashMap<i64, (String, Str
 }
 
 fn account_names(st: &State) -> ApiResult<HashMap<i64, (String, String)>> {
-    Ok(st
-        .contest
-        .db
-        .accounts()?
-        .into_iter()
-        .map(|a| (a.id, (a.username, a.display_name)))
-        .collect())
+    Ok(st.contest.db.accounts()?.into_iter().map(|a| (a.id, (a.username, a.display_name))).collect())
 }
 
 async fn submissions(S(st): S<State>, User(a, _): User) -> ApiResult<Json<Vec<SubmissionView>>> {
@@ -595,7 +622,12 @@ struct AnswerReq {
     public: bool,
 }
 
-async fn answer(S(st): S<State>, Jury(_): Jury, Path(id): Path<i64>, Json(req): Json<AnswerReq>) -> ApiResult<StatusCode> {
+async fn answer(
+    S(st): S<State>,
+    Jury(_): Jury,
+    Path(id): Path<i64>,
+    Json(req): Json<AnswerReq>,
+) -> ApiResult<StatusCode> {
     st.contest.answer(id, &req.answer, req.public)?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -700,7 +732,12 @@ struct DoneReq {
     done: bool,
 }
 
-async fn print_done(S(st): S<State>, Staff(_): Staff, Path(id): Path<i64>, Json(req): Json<DoneReq>) -> ApiResult<StatusCode> {
+async fn print_done(
+    S(st): S<State>,
+    Staff(_): Staff,
+    Path(id): Path<i64>,
+    Json(req): Json<DoneReq>,
+) -> ApiResult<StatusCode> {
     st.contest.set_print_done(id, req.done)?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -720,13 +757,8 @@ struct BalloonView {
 
 async fn balloons(S(st): S<State>, Staff(_): Staff) -> ApiResult<Json<Vec<BalloonView>>> {
     let accs: HashMap<i64, Account> = st.contest.db.accounts()?.into_iter().map(|a| (a.id, a)).collect();
-    let problems: HashMap<String, (String, String)> = st
-        .contest
-        .scoreboard(Viewer::Jury)?
-        .problems
-        .into_iter()
-        .map(|p| (p.name, (p.letter, p.color)))
-        .collect();
+    let problems: HashMap<String, (String, String)> =
+        st.contest.scoreboard(Viewer::Jury)?.problems.iter().cloned().map(|p| (p.name, (p.letter, p.color))).collect();
     let all = st.contest.db.balloons()?;
     Ok(Json(
         all.iter()
@@ -752,7 +784,12 @@ async fn balloons(S(st): S<State>, Staff(_): Staff) -> ApiResult<Json<Vec<Balloo
     ))
 }
 
-async fn balloon_done(S(st): S<State>, Staff(_): Staff, Path(id): Path<i64>, Json(req): Json<DoneReq>) -> ApiResult<StatusCode> {
+async fn balloon_done(
+    S(st): S<State>,
+    Staff(_): Staff,
+    Path(id): Path<i64>,
+    Json(req): Json<DoneReq>,
+) -> ApiResult<StatusCode> {
     st.contest.set_balloon_done(id, req.done)?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -780,7 +817,12 @@ async fn jury_status(S(st): S<State>, Jury(_): Jury) -> ApiResult<Json<JuryStatu
         online: c.db.online_count(online::now_ms(), 120_000)?,
         accounts: c.db.accounts()?.iter().filter(|a| a.role == Role::Contestant).count(),
         submissions: c.db.submissions(None)?.len(),
-        unanswered: c.db.clarifications(None)?.iter().filter(|q| q.from_account.is_some() && q.answered_ms.is_none()).count(),
+        unanswered: c
+            .db
+            .clarifications(None)?
+            .iter()
+            .filter(|q| q.from_account.is_some() && q.answered_ms.is_none())
+            .count(),
     }))
 }
 
@@ -825,7 +867,12 @@ struct IgnoreReq {
     ignored: bool,
 }
 
-async fn ignore(S(st): S<State>, Jury(a): Jury, Path(id): Path<i64>, Json(req): Json<IgnoreReq>) -> ApiResult<StatusCode> {
+async fn ignore(
+    S(st): S<State>,
+    Jury(a): Jury,
+    Path(id): Path<i64>,
+    Json(req): Json<IgnoreReq>,
+) -> ApiResult<StatusCode> {
     st.contest.set_ignored(id, req.ignored, &a.username).map_err(|e| ApiError::bad_request(format!("{e:#}")))?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -833,7 +880,8 @@ async fn ignore(S(st): S<State>, Jury(a): Jury, Path(id): Path<i64>, Json(req): 
 /// The viewer's own row (DOMjudge team page): updated during the freeze,
 /// rank unknown (0) while frozen.
 async fn team_row(S(st): S<State>, User(a, _): User) -> ApiResult<Json<Option<online::Scoreboard>>> {
-    Ok(Json(st.contest.team_row(a.id)?))
+    let c = st.contest.clone();
+    Ok(Json(tokio::task::spawn_blocking(move || c.team_row(a.id)).await.map_err(|e| anyhow::anyhow!("{e}"))??))
 }
 
 #[derive(Serialize)]
@@ -1021,7 +1069,11 @@ struct ImportReq {
     csv: String,
 }
 
-async fn import_accounts(S(st): S<State>, Admin(_): Admin, Json(req): Json<ImportReq>) -> ApiResult<Json<Vec<Credential>>> {
+async fn import_accounts(
+    S(st): S<State>,
+    Admin(_): Admin,
+    Json(req): Json<ImportReq>,
+) -> ApiResult<Json<Vec<Credential>>> {
     let list = online::accounts::parse_account_csv(&req.csv).map_err(|e| ApiError::bad_request(format!("{e:#}")))?;
     let c = st.contest.clone();
     let creds = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<Credential>> {
@@ -1052,7 +1104,7 @@ async fn update_account(
     if a.disabled {
         st.contest.db.delete_sessions_of(id)?;
     }
-    let _ = st.events.send(Notice::Scoreboard);
+    st.contest.accounts_changed();
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1064,7 +1116,7 @@ async fn delete_account(S(st): S<State>, Admin(me): Admin, Path(id): Path<i64>) 
         return Err(ApiError::bad_request("account has submissions; disable it instead"));
     }
     st.contest.db.delete_account(id)?;
-    let _ = st.events.send(Notice::Scoreboard);
+    st.contest.accounts_changed();
     Ok(StatusCode::NO_CONTENT)
 }
 

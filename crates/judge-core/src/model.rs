@@ -177,6 +177,9 @@ pub enum Comparator {
     Strict,
     /// Whitespace separated tokens.
     Tokens,
+    /// Whitespace separated tokens that must also be on the same lines:
+    /// LemonLime's "ignore extra spaces" mode (its default).
+    IgnoreSpaces,
     /// Tokens; numbers compared with absolute / relative error `real_eps`.
     Real,
     /// Byte for byte.
@@ -292,6 +295,10 @@ pub struct Problem {
     /// Extra compiler arguments for this problem (appended).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub compile_args: String,
+    /// Compiler arguments that replace the ones from the settings for this
+    /// problem (e.g. LemonLime's compiler configuration of the task).
+    #[serde(default, skip_serializing_if = "CompileFlags::is_empty")]
+    pub compile_flags: CompileFlags,
     /// Online contests: short label ("A") and balloon colour ("#e53935").
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub letter: String,
@@ -309,6 +316,30 @@ pub struct Problem {
 
 fn default_eps() -> f64 {
     1e-6
+}
+
+/// Per-language compiler arguments of a problem; empty = from the settings.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct CompileFlags {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub cpp: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub c: String,
+}
+
+impl CompileFlags {
+    pub fn is_empty(&self) -> bool {
+        self.cpp.trim().is_empty() && self.c.trim().is_empty()
+    }
+    /// The arguments for `lang`, if set.
+    pub fn get(&self, lang: crate::compile::Lang) -> Option<&str> {
+        let s = match lang {
+            crate::compile::Lang::Cpp => &self.cpp,
+            crate::compile::Lang::C => &self.c,
+        };
+        let s = s.trim();
+        (!s.is_empty()).then_some(s)
+    }
 }
 
 impl Problem {
@@ -330,6 +361,7 @@ impl Problem {
             interactor: None,
             communication: None,
             compile_args: String::new(),
+            compile_flags: CompileFlags::default(),
             letter: String::new(),
             color: String::new(),
             statement: String::new(),

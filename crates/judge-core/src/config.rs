@@ -23,6 +23,8 @@ pub struct AppSettings {
     /// Compile cache limit in MB (0 = unlimited).
     pub cache_limit_mb: u64,
     pub patch_stack: bool,
+    /// Re-run time-limit cases alone after a batch.
+    pub recheck_tle: bool,
     pub output_limit_mb: u64,
     pub compile_time_ms: u64,
     pub compile_memory_mb: u64,
@@ -44,6 +46,7 @@ impl Default for AppSettings {
             overlap_compile: s.overlap_compile,
             cache_limit_mb: s.cache_limit_mb,
             patch_stack: s.patch_stack,
+            recheck_tle: s.recheck_tle,
             output_limit_mb: s.output_limit_mb,
             compile_time_ms: s.build.cpu_ms,
             compile_memory_mb: s.build.memory_mb,
@@ -92,6 +95,7 @@ impl AppSettings {
             cache_limit_mb: self.cache_limit_mb,
             patch_stack: self.patch_stack,
             stop_on_failure: false,
+            recheck_tle: self.recheck_tle,
             output_limit_mb: self.output_limit_mb.max(1),
             build: BuildLimits { cpu_ms: self.compile_time_ms.max(1000), memory_mb: self.compile_memory_mb.max(256) },
             checker: CheckerLimits {

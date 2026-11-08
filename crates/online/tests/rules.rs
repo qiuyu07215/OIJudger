@@ -116,3 +116,53 @@ fn ignore_rejudge_selection_and_frozen_team_row() {
     assert_eq!(b.1.iter().map(|x| x.0).sum::<u32>(), 1);
     let _ = Path::new("");
 }
+
+/// Scoreboards are cached; every change that affects them must show at once.
+#[test]
+fn cached_boards_follow_changes() {
+    let (_t, c) = contest();
+    let mut cfg = c.config();
+    cfg.format = ContestFormat::Icpc;
+    let start = online::now_ms() - 250 * 60_000;
+    cfg.start = format_local(start);
+    cfg.duration_min = 300;
+    cfg.freeze_min = 60;
+    c.set_config(cfg).unwrap();
+    let t1 = team(&c, "t1");
+    let min = |m: i64| start + m * 60_000 + 1000;
+    let s1 = judged(&c, &t1, "a", min(10), Outcome::Accepted);
+    let s2 = judged(&c, &t1, "b", min(245), Outcome::Accepted);
+    c.accounts_changed(); // the direct database writes above bypass the contest
+
+    assert_eq!(c.scoreboard(Viewer::Public).unwrap().rows.len(), 1);
+    let row = |c: &OnlineContest| c.team_row(t1.id).unwrap().unwrap().rows[0].row.solved;
+    assert_eq!(row(&c), 2);
+
+    // New account: on the board straight away.
+    let t2 = team(&c, "t2");
+    assert_eq!(c.scoreboard(Viewer::Public).unwrap().rows.len(), 2);
+    assert_eq!(c.scoreboard(Viewer::Jury).unwrap().rows.len(), 2);
+
+    // Disabled account (changed in the database, then announced): gone.
+    let mut a = t2.clone();
+    a.disabled = true;
+    c.db.update_account(&a).unwrap();
+    c.accounts_changed();
+    assert_eq!(c.scoreboard(Viewer::Public).unwrap().rows.len(), 1);
+
+    // Ignoring submissions updates the public board and the frozen team row.
+    c.set_ignored(s1, true, "jury").unwrap();
+    assert_eq!(c.scoreboard(Viewer::Public).unwrap().rows[0].row.solved, 0);
+    assert_eq!(row(&c), 1);
+    c.set_ignored(s2, true, "jury").unwrap();
+    assert_eq!(row(&c), 0);
+
+    // Unfreezing shows the hidden result to everyone.
+    c.set_ignored(s2, false, "jury").unwrap();
+    assert_eq!(c.scoreboard(Viewer::Public).unwrap().rows[0].row.cells[1].pending, 1);
+    c.unfreeze(true, "jury").unwrap();
+    let b = c.scoreboard(Viewer::Public).unwrap();
+    assert!(!b.frozen);
+    assert_eq!(b.rows[0].row.solved, 1);
+    assert_eq!(c.team_row(t1.id).unwrap().unwrap().rows[0].row.rank, 1);
+}

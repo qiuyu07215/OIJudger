@@ -58,6 +58,9 @@ pub enum Command {
         /// Compile cache limit in MB (0 = unlimited; default from settings, 10240)
         #[arg(long, value_name = "MB")]
         cache_limit: Option<u64>,
+        /// Do not re-run time-limit cases one at a time after judging
+        #[arg(long)]
+        no_recheck: bool,
         /// Print every finished task
         #[arg(short, long)]
         verbose: bool,
@@ -101,9 +104,7 @@ pub enum Command {
         force: bool,
     },
     /// Delete the compile cache of a contest (results are kept)
-    Clean {
-        dir: PathBuf,
-    },
+    Clean { dir: PathBuf },
     /// List detected compilers
     Compilers,
     /// Verify sandbox isolation and limits on this machine
@@ -172,7 +173,18 @@ pub fn run(cli: Cli) -> Result<i32> {
             println!("Contestants: {}", judge_core::discover::list_contestants(&cd).len());
             Ok(0)
         }
-        Command::Judge { dir, problems, contestants, all, jobs, no_pin, two_phase, cache_limit, verbose } => {
+        Command::Judge {
+            dir,
+            problems,
+            contestants,
+            all,
+            jobs,
+            no_pin,
+            two_phase,
+            cache_limit,
+            no_recheck,
+            verbose,
+        } => {
             let mut settings = settings;
             if let Some(j) = jobs {
                 settings.workers = j;
@@ -185,6 +197,9 @@ pub fn run(cli: Cli) -> Result<i32> {
             }
             if let Some(mb) = cache_limit {
                 settings.cache_limit_mb = mb;
+            }
+            if no_recheck {
+                settings.recheck_tle = false;
             }
             let project = Project::open(&dir)?;
             let sel = Selection { problems, contestants, only_stale: !all };
@@ -204,7 +219,9 @@ pub fn run(cli: Cli) -> Result<i32> {
             let fmt = ExportFormat::parse(&format).ok_or_else(|| anyhow::anyhow!("unknown format {format}"))?;
             let project = Project::open(&dir)?;
             let out = output.unwrap_or_else(|| project.root().join(format!("results.{}", fmt.extension())));
-            project.export(fmt, &out, lang.as_deref().unwrap_or(&settings.language))?;
+            for w in project.export(fmt, &out, lang.as_deref().unwrap_or(&settings.language))? {
+                eprintln!("warning: {w}");
+            }
             println!("Wrote {}", out.display());
             Ok(0)
         }

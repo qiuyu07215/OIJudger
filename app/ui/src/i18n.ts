@@ -60,7 +60,7 @@ const zh = {
     headerName: "选手包含的头文件名", graderPath: "grader 实现（相对 data/）", interactor: "testlib 交互器（相对 data/）",
     comm: "通信题文件", commSources: "选手源文件（每行一个）", commInterfaces: "接口文件（相对 data/，每行一个）",
     commMulti: "多程序通信", commMultiHint: "每个源文件编译为独立程序；接口文件中的 grader.cpp 单独编译并运行，由它启动选手程序。",
-    compileArgs: "附加编译参数", subtasks: "测试点", total: "总分 {n}", cases: "{n} 组数据",
+    compileArgs: "附加编译参数", compileFlagsCpp: "C++ 编译参数", compileFlagsHint: "留空则用“设置”中的参数；填写后替换之", subtasks: "测试点", total: "总分 {n}", cases: "{n} 组数据",
     score: "分值", time: "时间 (ms)", memory: "空间 (MiB)", depends: "依赖", dataFiles: "数据文件",
     inputPath: "输入", outputPath: "答案", addCase: "添加数据", addSubtask: "添加测试点",
     bulk: "批量设置", splitScores: "平分 {n} 分", merge: "合并选中", split: "拆分选中",
@@ -75,6 +75,7 @@ const zh = {
   subfolder: { auto: "自动（优先子文件夹）", inside: "仅 <试题>/ 子文件夹", outside: "仅选手文件夹根目录" },
   comparator: {
     lines: "逐行比较（忽略行末空格，推荐）", strict: "逐行严格比较", tokens: "按单词比较",
+    ignore_spaces: "忽略多余空格（同 LemonLime：按单词比较，且须在同一行）",
     real: "实数比较", binary: "逐字节比较",
   },
   checkerKind: { testlib: "testlib", lemon: "Lemon（6 个参数）" },
@@ -84,6 +85,7 @@ const zh = {
     workers: "并行线程数（0 = 自动，推荐 {n}）", pin: "将线程绑定到性能核（计时更稳定）", overlap: "编译与评测同时进行（编译器只用评测之外的核心）",
     cacheLimit: "编译缓存上限（MB，0 = 不限；超过时暂停编译，并删除已评测完的程序）",
     patchStack: "栈空间 = 内存限制（避免 Windows 默认 2MB 栈导致递归爆栈）", outputLimit: "输出上限 (MiB)",
+    recheckTle: "超时复测（评完后把超时的测试点单独重测一次，结果更接近 LemonLime）",
     compileTime: "编译时间限制 (ms)", compileMemory: "编译内存限制 (MiB)", checkerTime: "校验器时间限制 (ms)",
     checkerMemory: "校验器内存限制 (MiB)", language: "界面语言", selftest: "沙箱自检",
     selftestHint: "在本机验证：断网、文件隔离、禁止子进程、资源限制等是否生效。",
@@ -91,7 +93,7 @@ const zh = {
   },
   stats: {
     refresh: "重新计算", export: "导出成绩", exportHtml: "HTML（含详细结果）", exportHtm: "HTML（仅成绩表）",
-    exportXlsx: "Excel 工作簿", exportCsv: "CSV", exported: "已导出到 {p}",
+    exportXlsx: "Excel 工作簿", exportCsv: "CSV", exportCdf: "LemonLime 比赛（.cdf，含成绩）", exported: "已导出到 {p}",
     contestants: "选手", mean: "平均分", median: "中位数", std: "标准差", max: "最高分", disc: "区分度",
     discHint: "前 27% 与后 27% 选手平均分之差 ÷ 满分（总分按总分排名，各题同理）",
     histogram: "总分分布", histogramHint: "每段人数；悬停查看累计人数",
@@ -140,9 +142,11 @@ const zh = {
   judging: {
     title: "评测", compiling: "编译中 {done}/{total}", compiledShort: "已编译 {done}/{total}", paused: "编译已暂停（缓存已满）", pausedHint: "编译缓存已达上限（见“设置”），等已评测的程序从缓存中删除后自动继续", background: "后台运行", stop: "停止", close: "关闭", log: "评测记录", empty: "等待评测结果…",
     point: "测试点 {n}", total: "总分", follow: "自动滚动",
+    recheck: "超时复测 {done}/{total}", recheckHint: "并行评测会拖慢吃内存的程序；评完后把超时的测试点单独重测一次（可在“设置”中关闭）",
   },
   msg: {
-    openFailed: "打开失败：{e}", saveFailed: "保存失败：{e}", judgeFailed: "评测出错：{e}",
+    openFailed: "打开失败：{e}", closeFailed: "无法关闭：{e}", saveFailed: "保存失败：{e}", judgeFailed: "评测出错：{e}",
+    onlineRunning: "在线比赛服务正在运行，请先在“比赛 → 在线比赛（局域网）”中停止服务",
     nothingToJudge: "没有需要评测的项目", selectFirst: "请先在表格中勾选选手",
     dropFolder: "请拖入文件夹", savedProblems: "试题配置已保存",
   },
@@ -207,7 +211,7 @@ const en: typeof zh = {
     graderPath: "Grader (relative to data/)", interactor: "testlib interactor (relative to data/)",
     comm: "Communication files", commSources: "Contestant sources (one per line)",
     commInterfaces: "Interface files (relative to data/, one per line)",
-    commMulti: "Multi-program", commMultiHint: "Each source becomes its own program; grader.cpp from the interface files is compiled separately and runs, starting the contestant programs.", compileArgs: "Extra compiler arguments",
+    commMulti: "Multi-program", commMultiHint: "Each source becomes its own program; grader.cpp from the interface files is compiled separately and runs, starting the contestant programs.", compileArgs: "Extra compiler arguments", compileFlagsCpp: "C++ compiler arguments", compileFlagsHint: "Empty: from Settings; otherwise replaces them",
     subtasks: "Test points", total: "Total {n}", cases: "{n} files", score: "Score", time: "Time (ms)",
     memory: "Memory (MiB)", depends: "Depends on", dataFiles: "Data files", inputPath: "Input", outputPath: "Answer",
     addCase: "Add files", addSubtask: "Add test point", bulk: "Bulk edit", splitScores: "Split {n} points evenly",
@@ -222,6 +226,7 @@ const en: typeof zh = {
   subfolder: { auto: "Auto (prefer subfolder)", inside: "Only <problem>/ subfolder", outside: "Only contestant root" },
   comparator: {
     lines: "Lines, ignore trailing spaces (recommended)", strict: "Lines, exact", tokens: "Tokens",
+    ignore_spaces: "Ignore extra spaces (as LemonLime: tokens, on the same lines)",
     real: "Real numbers", binary: "Bytes",
   },
   checkerKind: { testlib: "testlib", lemon: "Lemon (6 arguments)" },
@@ -231,6 +236,7 @@ const en: typeof zh = {
     workers: "Parallel workers (0 = auto, recommended {n})", pin: "Pin workers to performance cores (stabler timing)", overlap: "Compile and judge at the same time (compilers use only the cores not used for timing)",
     cacheLimit: "Compile cache limit (MB, 0 = unlimited; when exceeded, compiling pauses and judged programs are removed)",
     patchStack: "Stack size = memory limit (avoids Windows' default 2 MiB stack)", outputLimit: "Output limit (MiB)",
+    recheckTle: "Recheck time limits (afterwards, judge time-limit cases again one at a time, as LemonLime would)",
     compileTime: "Compile time limit (ms)", compileMemory: "Compile memory limit (MiB)",
     checkerTime: "Checker time limit (ms)", checkerMemory: "Checker memory limit (MiB)", language: "Language",
     selftest: "Sandbox self test", selftestHint: "Verify on this machine that network, file isolation, child processes and limits are enforced.",
@@ -239,7 +245,7 @@ const en: typeof zh = {
   },
   stats: {
     refresh: "Recompute", export: "Export results", exportHtml: "HTML (with details)", exportHtm: "HTML (table only)",
-    exportXlsx: "Excel workbook", exportCsv: "CSV", exported: "Exported to {p}",
+    exportXlsx: "Excel workbook", exportCsv: "CSV", exportCdf: "LemonLime contest (.cdf, with results)", exported: "Exported to {p}",
     contestants: "Contestants", mean: "Mean", median: "Median", std: "Std. dev.", max: "Max", disc: "Discrimination",
     discHint: "Mean of the top 27% minus mean of the bottom 27%, divided by the full score",
     histogram: "Total score distribution", histogramHint: "Contestants per band; hover for cumulative counts",
@@ -288,9 +294,11 @@ const en: typeof zh = {
   judging: {
     title: "Judging", compiling: "Compiling {done}/{total}", compiledShort: "compiled {done}/{total}", paused: "compiling paused (cache full)", pausedHint: "The compile cache reached its limit (see Settings); compiling resumes once judged programs are removed from the cache", background: "Run in background", stop: "Stop", close: "Close", log: "Log", empty: "Waiting for results…",
     point: "test point {n}", total: "total", follow: "Auto scroll",
+    recheck: "rechecking time limits {done}/{total}", recheckHint: "Parallel judging can slow memory-heavy programs down; afterwards, time-limit cases are judged again one at a time (can be turned off in Settings)",
   },
   msg: {
-    openFailed: "Cannot open: {e}", saveFailed: "Cannot save: {e}", judgeFailed: "Judging failed: {e}",
+    openFailed: "Cannot open: {e}", closeFailed: "Cannot close: {e}", saveFailed: "Cannot save: {e}", judgeFailed: "Judging failed: {e}",
+    onlineRunning: "The online contest server is running; stop it first (Contest → Online contest (LAN))",
     nothingToJudge: "Nothing to judge", selectFirst: "Select contestants in the table first",
     dropFolder: "Please drop a folder", savedProblems: "Problem configuration saved",
   },

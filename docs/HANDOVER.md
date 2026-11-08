@@ -5,7 +5,7 @@
 ## 1. 现状
 
 - 仓库：<https://github.com/qiuyu07215/OIJudger>（公开，MIT 许可），主分支 `master`。
-- 最新版本：**v0.2.0**（新增在线比赛）（Releases 页提供普通版与带编译器的便携版两个压缩包）。
+- 最新版本：**v0.2.1**（在线比赛榜单缓存；与 LemonLime 的兼容：忽略多余空格、编译配置、超时复测、导出 .cdf）（Releases 页提供普通版与带编译器的便携版两个压缩包）。
   - v0.1.0 的标签指向的提交与发布文件不完全对应：发布文件后来换成了 MSVC 构建，但标签没有移动。v0.1.1 的标签与发布文件一致。
 - 平台：只支持 Windows 10/11 x64。沙箱接口已为以后的 Linux 后端预留，但尚未实现。
 - 功能已全部实现：
@@ -206,12 +206,20 @@ cargo build --release -p oijudger -p oij --features oijudger/custom-protocol
   - Lemon 校验器使用 6 参数协议。
 - **testlib 交互器**：两个进程用管道相连。谁先结束以谁的结果为准（`interactor_first`），避免选手后来的 TLE 掩盖交互器已判出的 WA。
 - **增量评测**：每条结果记录源码指纹和试题指纹（配置、数据文件大小与修改时间、编译器版本与参数、相关设置），任一变化即视为过期。
+- **超时复测**（`Settings::recheck_tle`）：`Engine::run` 评完后，把含 TLE 测试点的结果按选手、题目排序，在 0 号工作线程上逐个调用 `recheck_problem`：之前的结果直接沿用，TLE 的点重跑；某题重跑的点仍 TLE 就不再重跑该题后面的 TLE 点；之前因失败而跳过的点按需补跑。事件是 `RecheckStarted` / `Rechecked`（不计入 `TaskDone` 的进度），保存结果统一用 `Event::result()`。
 
 ### LemonLime 导入（lemon-import）
 
 - `.cdf` 是 JSON，键名是 LemonLime 的 C++ 成员名。
 - 依赖关系编码在形如 `"<n>_lemon_SUbtaskDEPENDENCE_fLAg"` 的键里。
 - `taskType` 0～4，其中 4 = 多程序通信；`comparisonMode` 0～5。
+- 比较方式 1（忽略多余空格，LemonLime 默认）= `Comparator::IgnoreSpaces`：按 C `isspace` 分词，单词相同且行号相同（`\n`、`\r`、`\r\n` 都算换行）。LemonLime 源码见 `src/core/casejudger.cpp` 的 `compareIgnoreSpaces`。
+- 编译配置：`.cdf` 只存名字（`{"g++": "CCF"}`），参数在 LemonLime 的 Qt 设置里，Windows 上是注册表 `HKCU\Software\LemonLime\lemon\v1.2\CompilerSettings\<n>\Configuration\<m>`（`lemon-import/src/settings.rs`）。导入时去掉 `-o %s %s.*`，写入 `Problem::compile_flags`（替换设置中的参数；`compile_args` 是追加）。
+- 导出（`lemon-import/src/export.rs`）：选手部分的键名、维度与类型照 LemonLime 的 `Contestant::writeToJson`：`[题][测试点][数据]`，分数、时间、内存必须是整数（Qt 的 `toInt()` 对小数返回 0）；未运行的点时间、内存记 -1；时间戳用 Qt::UTC（timespec = 1）。结果枚举见 LemonLime 的 `src/base/LemonType.hpp`。
+- 2026-11-08 用本机 `CSP-S2026/Judge-Official` 中 LemonLime 已评的 47 名选手（179 个题）对比：
+  - 不同的只有超时临界点、并行评测造成的超时（超时复测后一致）和有未定义行为的程序。
+  - 无法启动、未定义行为、MLE / TLE 的判法名称不同，但都是 0 分。
+  - 注意：对比计时要在机器空闲时做。后台有游戏等程序占 CPU 时，会多出大量超时。
 
 ### 其他
 
@@ -251,11 +259,25 @@ cargo build --release -p oijudger -p oij --features oijudger/custom-protocol
 - `crates/online/tests/rules.rs`：太迟、忽略、本队行、重测筛选、题目统计。
 - `crates/online/tests/online_demo.rs`：用演示比赛真实评测三种赛制。
 - `crates/server/tests/http.rs`：真实 HTTP 服务，覆盖登录、CSRF、越权、文件访问限制、SSE、账号导入。
+- `crates/online/tests/rules.rs` 的 `cached_boards_follow_changes`：每种改动后榜单立刻变化（榜单有缓存）。
+
+**压力测试**（`scripts/online_load.mjs`）：
+- 用法：`node scripts/online_load.mjs <地址> <账号.csv> <admin 密码> examples/demo-contest/source <结果.json>`。
+- 模拟的行为：每支队伍像网页一样保持 SSE 连接，按通知节流刷新本队行、提交记录，半数队伍还开着榜单页。先平稳提交（默认每队 3 次 / 5 分钟），再在 20 秒内每队提交 1 次（赛末高峰），评委端同时刷新提交列表。
+- 结果（2026-11-08，i5-12400，200 队，800 份提交，每份源码都不同）：
+  - 全部评测完成，结果与代码一致，无请求出错，无漏推送，SSE 无断线。
+  - 200 队同时登录并打开首页约 2 秒。
+  - 平稳阶段从提交到看到结果：中位数约 1 秒。
+  - 赛末高峰：200 份提交在最后一份提交后约 27 秒全部评完（同时 4 份在评测）。
+  - 服务进程约占 0.3–0.5 个核，内存约 60 MB。
+- 加缓存前后，单个请求的服务端耗时（800 份提交）：榜单 6.2 → 1.6 ms，本队行 3.4 → 0.9 ms。
+- 注意：压力测试的客户端本身很耗 CPU（要解析大量榜单 JSON），测出的延迟偏高；比较服务端改动时用顺序请求测单个请求耗时更准。
 
 **坑**
 - 同一进程里可能同时有两个工作区（在线评测服务 + 赛后离线评测），所以工作区目录和沙箱身份名都带实例编号（`<pid>-<n>`）。
 - ICPC 提前停止时，被跳过的子任务记 0 分。
 - Naive UI 的对话框卡片自身带 `n-modal` 类，在页面里查找元素时注意。
+- 榜单有缓存（`OnlineContest::scoreboard` / `team_row`，以及服务端的编码结果）。凡是会影响榜单的改动，都必须经过 `emit`（发出 Submission / Scoreboard / Contest 通知）；直接改数据库的地方要调用 `accounts_changed()`。其他进程改数据库（如命令行导入账号）最多 5 秒后生效。
 
 ## 7. 运行时数据位置
 

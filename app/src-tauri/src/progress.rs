@@ -47,6 +47,9 @@ pub struct ProgressView {
     pub compile_paused: bool,
     pub total: usize,
     pub done: usize,
+    /// Recheck of time-limit cases after the batch: tasks re-run / to re-run.
+    pub recheck_done: usize,
+    pub recheck_total: usize,
     pub workers: Vec<Option<WorkerView>>,
     /// Finished tasks by label (AC, WA, CE, ...).
     pub counts: BTreeMap<String, usize>,
@@ -109,30 +112,55 @@ impl Progress {
                     message: case.message.lines().next().unwrap_or("").chars().take(160).collect(),
                 });
             }
+            Event::RecheckStarted { total } => {
+                self.view.recheck_total = *total;
+                self.view.recheck_done = 0;
+            }
+            Event::Rechecked { worker, result, previous_label, previous_score } => {
+                self.view.recheck_done += 1;
+                if let Some(n) = self.view.counts.get_mut(previous_label) {
+                    *n = n.saturating_sub(1);
+                    if *n == 0 {
+                        self.view.counts.remove(previous_label);
+                    }
+                }
+                let note = if result.score != *previous_score {
+                    format!("recheck: {} -> {}", previous_score, result.score)
+                } else {
+                    "recheck: unchanged".to_string()
+                };
+                self.finish_task(*worker, result, note);
+            }
             Event::TaskDone { worker, result } => {
                 self.view.done += 1;
-                *self.view.counts.entry(result.label().to_string()).or_default() += 1;
-                if let Some(w) = self.view.workers.get_mut(*worker) {
-                    *w = None;
-                }
-                self.view.updates.push(cell_from_result(result));
-                self.push_log(LogLine {
-                    contestant: result.contestant.clone(),
-                    problem: result.problem.clone(),
-                    subtask: 0,
-                    input: String::new(),
-                    verdict: result.label().to_string(),
-                    time_ms: result.time_ms,
-                    memory_kb: 0,
-                    score: Some((result.score, result.full)),
-                    message: if result.status == judge_core::Status::Judged {
-                        String::new()
-                    } else {
-                        result.message.lines().next().unwrap_or("").chars().take(160).collect()
-                    },
-                });
+                let message = if result.status == judge_core::Status::Judged {
+                    String::new()
+                } else {
+                    result.message.lines().next().unwrap_or("").chars().take(160).collect()
+                };
+                self.finish_task(*worker, result, message);
             }
         }
+    }
+
+    /// A task's final result: counts, table cell and the summary log line.
+    fn finish_task(&mut self, worker: usize, result: &ProblemResult, message: String) {
+        *self.view.counts.entry(result.label().to_string()).or_default() += 1;
+        if let Some(w) = self.view.workers.get_mut(worker) {
+            *w = None;
+        }
+        self.view.updates.push(cell_from_result(result));
+        self.push_log(LogLine {
+            contestant: result.contestant.clone(),
+            problem: result.problem.clone(),
+            subtask: 0,
+            input: String::new(),
+            verdict: result.label().to_string(),
+            time_ms: result.time_ms,
+            memory_kb: 0,
+            score: Some((result.score, result.full)),
+            message,
+        });
     }
 
     fn push_log(&mut self, l: LogLine) {

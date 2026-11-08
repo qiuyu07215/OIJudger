@@ -11,12 +11,13 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use axum::body::Bytes;
 use axum::extract::{ConnectInfo, FromRequestParts};
 use axum::http::request::Parts;
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::Router;
-use online::{Account, Notice, Notify, OnlineContest, Role};
+use online::{Account, Notice, Notify, OnlineContest, Role, Scoreboard};
 use parking_lot::Mutex;
 use serde::Serialize;
 use tokio::sync::broadcast;
@@ -38,6 +39,15 @@ pub struct AppState {
     /// Set when the server stops: ends the open event streams, which
     /// would otherwise keep the graceful shutdown waiting forever.
     pub(crate) closing: tokio::sync::watch::Sender<bool>,
+    /// Encoded scoreboards, so each board version is serialised and
+    /// compressed once rather than once per page reload.
+    board_bytes: Mutex<Vec<EncodedBoard>>,
+}
+
+struct EncodedBoard {
+    board: Arc<Scoreboard>,
+    json: Bytes,
+    gzip: Option<Bytes>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -55,9 +65,12 @@ pub type State = Arc<AppState>;
 pub fn channel() -> (broadcast::Sender<Notice>, Notify) {
     let (tx, _) = broadcast::channel(2048);
     let t = tx.clone();
-    (tx, Arc::new(move |n| {
-        let _ = t.send(n);
-    }))
+    (
+        tx,
+        Arc::new(move |n| {
+            let _ = t.send(n);
+        }),
+    )
 }
 
 impl AppState {
@@ -69,7 +82,36 @@ impl AppState {
             one_time: Mutex::new(HashMap::new()),
             offline_judging: Mutex::new(None),
             closing: tokio::sync::watch::channel(false).0,
+            board_bytes: Mutex::new(Vec::new()),
         })
+    }
+
+    /// `board` as JSON, gzip-compressed if `gzip`; returns whether it is.
+    pub(crate) fn encoded_board(&self, board: &Arc<Scoreboard>, gzip: bool) -> Result<(Bytes, bool)> {
+        use std::io::Write;
+        let mut cache = self.board_bytes.lock();
+        let i = match cache.iter().position(|e| Arc::ptr_eq(&e.board, board)) {
+            Some(i) => i,
+            None => {
+                let json = Bytes::from(serde_json::to_vec(&**board)?);
+                // Current public and jury boards, plus the ones just replaced.
+                if cache.len() >= 4 {
+                    cache.remove(0);
+                }
+                cache.push(EncodedBoard { board: board.clone(), json, gzip: None });
+                cache.len() - 1
+            }
+        };
+        let e = &mut cache[i];
+        if !gzip {
+            return Ok((e.json.clone(), false));
+        }
+        if e.gzip.is_none() {
+            let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+            enc.write_all(&e.json)?;
+            e.gzip = Some(Bytes::from(enc.finish()?));
+        }
+        Ok((e.gzip.clone().unwrap_or_default(), true))
     }
 
     /// A single-use token that logs in as `account_id` within a minute
@@ -178,9 +220,7 @@ async fn static_file(uri: Uri) -> Response {
         // Single-page app: unknown paths get index.html.
         _ => match WebAssets::get("index.html") {
             Some(f) => (f, "index.html".to_string()),
-            None => {
-                return (StatusCode::NOT_FOUND, "Web pages are not built (app/web: npm run build)").into_response()
-            }
+            None => return (StatusCode::NOT_FOUND, "Web pages are not built (app/web: npm run build)").into_response(),
         },
     };
     let mime = mime_guess::from_path(&name).first_or_octet_stream();

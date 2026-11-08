@@ -5,7 +5,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 export type Lang = "c" | "cpp";
 export type ProblemKind = "traditional" | "answer" | "interactive" | "communication";
 export type Subfolder = "auto" | "inside" | "outside";
-export type Comparator = "lines" | "strict" | "tokens" | "real" | "binary";
+export type Comparator = "lines" | "strict" | "tokens" | "ignore_spaces" | "real" | "binary";
 export type CheckerKind = "testlib" | "lemon";
 export type Verdict = "AC" | "PC" | "WA" | "TLE" | "MLE" | "OLE" | "RE" | "NoOutput" | "Skipped" | "SystemError";
 export type Status = "Judged" | "NoSource" | "CompileError" | "SystemError";
@@ -27,6 +27,7 @@ export interface AppSettings {
   overlap_compile: boolean;
   cache_limit_mb: number;
   patch_stack: boolean;
+  recheck_tle?: boolean;
   output_limit_mb: number;
   compile_time_ms: number;
   compile_memory_mb: number;
@@ -66,6 +67,8 @@ export interface Problem {
   interactor?: string | null;
   communication?: { sources: string[]; interfaces: string[]; multi_program?: boolean } | null;
   compile_args?: string;
+  /** Replaces the compiler arguments from the settings for this problem. */
+  compile_flags?: { cpp?: string; c?: string };
   subtask: Subtask[];
 }
 
@@ -145,6 +148,9 @@ export interface ProgressView {
   compile_paused?: boolean;
   total: number;
   done: number;
+  /** Re-running time-limit cases one at a time after the batch. */
+  recheck_done?: number;
+  recheck_total?: number;
   workers: (WorkerView | null)[];
   counts: Record<string, number>;
   elapsed_ms: number;
@@ -227,7 +233,7 @@ export const api = {
   judgeStatus: () => invoke<ProgressView | null>("judge_status"),
   runSelftest: () => invoke<ProbeView[]>("run_selftest"),
   getStats: () => invoke<ContestStats>("get_stats"),
-  exportResults: (format: string, path: string) => invoke<void>("export_results", { format, path }),
+  exportResults: (format: string, path: string) => invoke<string[]>("export_results", { format, path }),
   similarity: (problem: string, threshold: number) => invoke<SimPair[]>("similarity", { problem, threshold }),
   onProgress: (f: (p: ProgressView) => void): Promise<UnlistenFn> =>
     listen<ProgressView>("judge-progress", (e) => f(e.payload)),

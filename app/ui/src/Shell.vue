@@ -31,13 +31,19 @@ const selected = ref<string[]>([]);
 const problemsRef = ref<InstanceType<typeof Problems> | null>(null);
 const unlisten: (() => void)[] = [];
 
+/** Backend refusals that have a translated explanation. */
+function errText(e: unknown): string {
+  const s = String(e);
+  return s.includes("Stop the online contest first") ? t("msg.onlineRunning") : s;
+}
+
 async function open(path: string | null) {
   if (!path) return;
   try {
     await openContest(path);
     tab.value = state.contest?.problem.length ? "results" : "summary";
   } catch (e) {
-    message.error(t("msg.openFailed", { e: String(e) }), { duration: 6000 });
+    message.error(t("msg.openFailed", { e: errText(e) }), { duration: 6000 });
   }
 }
 
@@ -82,6 +88,7 @@ const menus = computed<{ key: string; label: string; options: DropdownOption[] }
           { label: t("stats.exportHtm"), key: "export:htm" },
           { label: t("stats.exportXlsx"), key: "export:xlsx" },
           { label: t("stats.exportCsv"), key: "export:csv" },
+          { label: t("stats.exportCdf"), key: "export:cdf" },
         ],
       },
     ],
@@ -149,7 +156,7 @@ async function onMenu(key: string) {
     case "open": return open(await pickContestFolder());
     case "importCdf": return open(await pickCdf());
     case "openDir": return openPath(state.root);
-    case "close": return closeContest();
+    case "close": return closeContest().catch((e) => message.error(t("msg.closeFailed", { e: errText(e) }), { duration: 6000 }));
     case "reload": return reloadContest();
     case "online": showOnline.value = true; return;
     case "detect":
@@ -288,7 +295,10 @@ watch(
                   (state.progress.compile_done < state.progress.compile_total
                     ? " · " + t("judging.compiledShort", { done: state.progress.compile_done, total: state.progress.compile_total })
                     : "") +
-                  (state.progress.compile_paused ? " · " + t("judging.paused") : "")
+                  (state.progress.compile_paused ? " · " + t("judging.paused") : "") +
+                  (state.progress.recheck_total
+                    ? " · " + t("judging.recheck", { done: state.progress.recheck_done ?? 0, total: state.progress.recheck_total })
+                    : "")
                 : t("progress.finished")
           }}</span>
           <n-progress type="line" :percentage="pct" :show-indicator="false" :height="6" :processing="judging" color="#D97757" style="width: 140px" />

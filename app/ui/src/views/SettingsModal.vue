@@ -103,6 +103,7 @@ const langOptions = [
             <n-input-number v-model:value="form.cache_limit_mb" :min="0" :step="1024" style="width: 160px" />
           </n-form-item-gi>
           <n-form-item-gi :span="2" :label="t('settings.patchStack')"><n-switch v-model:value="form.patch_stack" /></n-form-item-gi>
+          <n-form-item-gi :span="2" :label="t('settings.recheckTle')"><n-switch v-model:value="form.recheck_tle" /></n-form-item-gi>
           <n-form-item-gi :label="t('settings.outputLimit')"><n-input-number v-model:value="form.output_limit_mb" :min="1" /></n-form-item-gi>
           <n-form-item-gi :label="t('settings.language')"><n-select v-model:value="form.language" :options="langOptions" /></n-form-item-gi>
           <n-form-item-gi :label="t('settings.compileTime')"><n-input-number v-model:value="form.compile_time_ms" :min="1000" :step="1000" /></n-form-item-gi>

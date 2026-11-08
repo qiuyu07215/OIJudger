@@ -4,14 +4,17 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use judge_core::model::{ContestFormat, OiFeedback, OnlineConfig};
 use judge_core::service::{Job, JudgeService, ServiceEvent};
-use judge_core::{AppSettings, Contest, ContestDir, Engine, Event, Lang, Problem, ProblemKind, ProblemResult, Status, Task};
-use parking_lot::{Mutex, RwLock};
+use judge_core::{
+    AppSettings, Contest, ContestDir, Engine, Event, Lang, Problem, ProblemKind, ProblemResult, Status, Task,
+};
+use parking_lot::{Mutex, MutexGuard, RwLock};
 use serde::Serialize;
 
 use crate::accounts::{hash_password, valid_username};
@@ -24,16 +27,29 @@ use crate::scoring::{self, IcpcRules, Outcome, Row, Sub};
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Notice {
     /// A submission was added or its judging changed.
-    Submission { id: i64, account: i64 },
+    Submission {
+        id: i64,
+        account: i64,
+    },
     Scoreboard,
-    Clarification { id: i64, from: Option<i64>, to: Option<i64>, public: bool },
-    Announcement { id: i64 },
+    Clarification {
+        id: i64,
+        from: Option<i64>,
+        to: Option<i64>,
+        public: bool,
+    },
+    Announcement {
+        id: i64,
+    },
     Balloon,
     Print,
     /// Contest settings, times or freeze state changed.
     Contest,
     /// Judging queue length changed.
-    Queue { queued: usize, running: usize },
+    Queue {
+        queued: usize,
+        running: usize,
+    },
 }
 
 pub type Notify = Arc<dyn Fn(Notice) + Send + Sync>;
@@ -47,8 +63,12 @@ pub enum SubmitError {
     /// Only C / C++ single-file submissions are accepted.
     UnsupportedLanguage,
     UnsupportedProblem,
-    TooLarge { max_kb: u64 },
-    TooSoon { wait_s: u64 },
+    TooLarge {
+        max_kb: u64,
+    },
+    TooSoon {
+        wait_s: u64,
+    },
     Empty,
     Disabled,
 }
@@ -105,7 +125,30 @@ pub struct OnlineContest {
     me: Weak<OnlineContest>,
     /// Serialises writing submissions back into `source/`.
     write_back: Mutex<()>,
+    /// Bumped by every change that can affect a scoreboard.
+    board_gen: AtomicU64,
+    board_cache: Mutex<BoardCache>,
 }
+
+/// Scoreboards are rebuilt only when something that affects them changed
+/// (`board_gen`), the freeze started or ended, or `BOARD_MAX_AGE` passed
+/// (covers changes made by another process, such as
+/// `oijudger-cli accounts import`). With ~200 open pages reloading after
+/// every result, this turns hundreds of database scans per result into one.
+#[derive(Default)]
+struct BoardCache {
+    gen: u64,
+    frozen: bool,
+    at: Option<Instant>,
+    jury: Option<Arc<Scoreboard>>,
+    public: Option<Arc<Scoreboard>>,
+    /// Contestant accounts and frozen-view submissions, for team rows
+    /// during the freeze.
+    snapshot: Option<Arc<(Vec<Account>, Vec<Sub>)>>,
+    rows: HashMap<i64, Option<Scoreboard>>,
+}
+
+const BOARD_MAX_AGE: Duration = Duration::from_secs(5);
 
 impl OnlineContest {
     /// Open a contest folder (with `contest.toml`) for online use.
@@ -123,11 +166,27 @@ impl OnlineContest {
             notify,
             me: me.clone(),
             write_back: Mutex::new(()),
+            board_gen: AtomicU64::new(0),
+            board_cache: Mutex::new(BoardCache::default()),
         }))
     }
 
     pub fn contest(&self) -> Contest {
         self.contest.read().clone()
+    }
+
+    /// Tell listeners; changes that can affect a scoreboard also invalidate
+    /// the cached ones.
+    fn emit(&self, n: Notice) {
+        if matches!(n, Notice::Submission { .. } | Notice::Scoreboard | Notice::Contest) {
+            self.board_gen.fetch_add(1, Ordering::AcqRel);
+        }
+        (self.notify)(n);
+    }
+
+    /// Accounts were changed directly in the database (scoreboard rows).
+    pub fn accounts_changed(&self) {
+        self.emit(Notice::Scoreboard);
     }
 
     pub fn config(&self) -> OnlineConfig {
@@ -153,8 +212,8 @@ impl OnlineContest {
         c.online = Some(cfg);
         c.save(&self.dir.root)?;
         drop(c);
-        (self.notify)(Notice::Contest);
-        (self.notify)(Notice::Scoreboard);
+        self.emit(Notice::Contest);
+        self.emit(Notice::Scoreboard);
         Ok(())
     }
 
@@ -167,8 +226,8 @@ impl OnlineContest {
         if self.service.lock().is_some() {
             self.start_judging()?;
         }
-        (self.notify)(Notice::Contest);
-        (self.notify)(Notice::Scoreboard);
+        self.emit(Notice::Contest);
+        self.emit(Notice::Scoreboard);
         Ok(())
     }
 
@@ -178,12 +237,8 @@ impl OnlineContest {
     pub fn start_judging(&self) -> Result<()> {
         let left = self.service.lock().take().map(|s| s.shutdown(false)).unwrap_or_default();
         drop(left); // their judgings are still unfinished in the database: requeued below
-        let engine = Engine::new(
-            self.dir.clone(),
-            self.contest(),
-            self.app.judge_settings(),
-            self.app.effective_compilers(),
-        );
+        let engine =
+            Engine::new(self.dir.clone(), self.contest(), self.app.judge_settings(), self.app.effective_compilers());
         anyhow::ensure!(
             !engine.tools.compilers.is_empty(),
             "No C/C++ compiler found. Install MinGW (g++) or set the compiler path in settings."
@@ -230,7 +285,7 @@ impl OnlineContest {
             // Nothing to tell the contestant during an OI contest.
             let now = now_ms();
             self.db.judging_done(jid, JudgingState::Done, Outcome::Pending, "", 0.0, 0.0, &[], 0, "", now)?;
-            (self.notify)(Notice::Submission { id: sid, account: acc.id });
+            self.emit(Notice::Submission { id: sid, account: acc.id });
             return Ok(());
         }
         let job = Job {
@@ -251,7 +306,7 @@ impl OnlineContest {
 
     fn notify_queue(&self) {
         let (queued, running) = self.queue();
-        (self.notify)(Notice::Queue { queued, running });
+        self.emit(Notice::Queue { queued, running });
     }
 
     fn on_service_event(&self, ev: ServiceEvent) {
@@ -261,7 +316,7 @@ impl OnlineContest {
                 let _ = self.db.judging_started(id, now);
                 if let Ok(Some(sid)) = self.db.valid_judging_submission(id) {
                     if let Ok(Some(s)) = self.db.submission(sid) {
-                        (self.notify)(Notice::Submission { id: sid, account: s.account_id });
+                        self.emit(Notice::Submission { id: sid, account: s.account_id });
                     }
                 }
                 self.notify_queue();
@@ -311,14 +366,14 @@ impl OnlineContest {
         if outcome == Outcome::Accepted && cfg.format != ContestFormat::Oi {
             let first = !self.db.balloons()?.iter().any(|b| b.problem == sub.problem);
             if self.db.add_balloon(sub.account_id, &sub.problem, sid, now, first)?.is_some() {
-                (self.notify)(Notice::Balloon);
+                self.emit(Notice::Balloon);
             }
         }
         if cfg.format == ContestFormat::Ioi {
             self.write_back_best(&sub)?;
         }
-        (self.notify)(Notice::Submission { id: sid, account: sub.account_id });
-        (self.notify)(Notice::Scoreboard);
+        self.emit(Notice::Submission { id: sid, account: sub.account_id });
+        self.emit(Notice::Scoreboard);
         Ok(())
     }
 
@@ -372,23 +427,22 @@ impl OnlineContest {
         anyhow::ensure!(valid_username(&account.username), "invalid user name");
         let filename = format!("{}.{ext}", p.source_name());
         let lang = if ext == "c" { "c" } else { "cpp" };
-        let (sid, jid) =
-            self.db.add_submission(account.id, &p.name, lang, &filename, source.len() as i64, now, ip)?;
+        let (sid, jid) = self.db.add_submission(account.id, &p.name, lang, &filename, source.len() as i64, now, ip)?;
         let dir = self.submission_root(sid).join(&account.username).join(&p.name);
         std::fs::create_dir_all(&dir)?;
         std::fs::write(dir.join(&filename), source).context("storing submission")?;
         self.db.log(now, &account.username, "submit", &format!("#{sid} {}", p.name));
         if too_late {
             self.db.judging_done(jid, JudgingState::Done, Outcome::Pending, TOO_LATE, 0.0, 0.0, &[], 0, "", now)?;
-            (self.notify)(Notice::Submission { id: sid, account: account.id });
+            self.emit(Notice::Submission { id: sid, account: account.id });
             return Ok(Ok(sid));
         }
         if cfg.format != ContestFormat::Ioi && !jury {
             self.write_back(&account.username, &p, &dir.join(&filename))?;
         }
-        (self.notify)(Notice::Submission { id: sid, account: account.id });
+        self.emit(Notice::Submission { id: sid, account: account.id });
         self.enqueue(sid, jid)?;
-        (self.notify)(Notice::Scoreboard);
+        self.emit(Notice::Scoreboard);
         Ok(Ok(sid))
     }
 
@@ -396,7 +450,8 @@ impl OnlineContest {
     pub fn source(&self, sub: &Submission) -> Result<String> {
         let acc = self.db.account(sub.account_id)?.context("account not found")?;
         let p = self.submission_root(sub.id).join(&acc.username).join(&sub.problem).join(&sub.filename);
-        Ok(String::from_utf8_lossy(&std::fs::read(&p).with_context(|| format!("reading {}", p.display()))?).into_owned())
+        Ok(String::from_utf8_lossy(&std::fs::read(&p).with_context(|| format!("reading {}", p.display()))?)
+            .into_owned())
     }
 
     /// Copy a submission into `source/<user>/<problem>/`, replacing the
@@ -447,7 +502,7 @@ impl OnlineContest {
             n += 1;
         }
         self.db.log(now_ms(), actor, "rejudge", &format!("{n} submission(s)"));
-        (self.notify)(Notice::Scoreboard);
+        self.emit(Notice::Scoreboard);
         Ok(n)
     }
 
@@ -462,8 +517,8 @@ impl OnlineContest {
     pub fn unfreeze(&self, unfrozen: bool, actor: &str) -> Result<()> {
         self.db.set_state(STATE_UNFROZEN, if unfrozen { "1" } else { "0" })?;
         self.db.log(now_ms(), actor, "freeze", if unfrozen { "unfrozen" } else { "frozen" });
-        (self.notify)(Notice::Contest);
-        (self.notify)(Notice::Scoreboard);
+        self.emit(Notice::Contest);
+        self.emit(Notice::Scoreboard);
         Ok(())
     }
 
@@ -475,8 +530,8 @@ impl OnlineContest {
     pub fn publish_results(&self, published: bool, actor: &str) -> Result<()> {
         self.db.set_state(STATE_PUBLISHED, if published { "1" } else { "0" })?;
         self.db.log(now_ms(), actor, "publish", &published.to_string());
-        (self.notify)(Notice::Contest);
-        (self.notify)(Notice::Scoreboard);
+        self.emit(Notice::Contest);
+        self.emit(Notice::Scoreboard);
         Ok(())
     }
 
@@ -534,19 +589,44 @@ impl OnlineContest {
         IcpcRules { penalty_min: cfg.penalty_min as i64, compile_error_penalty: cfg.compile_error_penalty }
     }
 
-    pub fn scoreboard(&self, viewer: Viewer) -> Result<Scoreboard> {
-        let now = now_ms();
+    fn board_cache(&self, frozen: bool) -> MutexGuard<'_, BoardCache> {
+        let gen = self.board_gen.load(Ordering::Acquire);
+        let mut c = self.board_cache.lock();
+        if c.gen != gen || c.frozen != frozen || c.at.is_none_or(|t| t.elapsed() > BOARD_MAX_AGE) {
+            *c = BoardCache { gen, frozen, at: Some(Instant::now()), ..Default::default() };
+        }
+        c
+    }
+
+    /// The scoreboard as `viewer` sees it (cached; see [`BoardCache`]).
+    pub fn scoreboard(&self, viewer: Viewer) -> Result<Arc<Scoreboard>> {
+        let jury = matches!(viewer, Viewer::Jury);
+        let frozen = self.frozen(now_ms());
+        let mut c = self.board_cache(frozen);
+        let slot = if jury { &mut c.jury } else { &mut c.public };
+        if let Some(b) = slot {
+            return Ok(b.clone());
+        }
+        let b = Arc::new(self.compute_scoreboard(jury, frozen)?);
+        *slot = Some(b.clone());
+        Ok(b)
+    }
+
+    fn compute_scoreboard(&self, jury: bool, frozen_now: bool) -> Result<Scoreboard> {
         let cfg = self.config();
         let accounts = self.board_accounts()?;
         let ids: Vec<i64> = accounts.iter().map(|a| a.id).collect();
         let problems = self.board_problems();
         let names: Vec<String> = problems.iter().map(|p| p.name.clone()).collect();
-        let jury = matches!(viewer, Viewer::Jury);
-        let frozen = !jury && self.frozen(now);
+        let frozen = !jury && frozen_now;
         let mut hidden = false;
         let rows = match cfg.format {
-            ContestFormat::Icpc => scoring::icpc_board(&ids, &names, &self.scoring_subs(&accounts, frozen)?, &Self::icpc_rules(&cfg)),
-            ContestFormat::Ioi => scoring::ioi_board(&ids, &names, &self.scoring_subs(&accounts, frozen)?, cfg.ioi_scoring),
+            ContestFormat::Icpc => {
+                scoring::icpc_board(&ids, &names, &self.scoring_subs(&accounts, frozen)?, &Self::icpc_rules(&cfg))
+            }
+            ContestFormat::Ioi => {
+                scoring::ioi_board(&ids, &names, &self.scoring_subs(&accounts, frozen)?, cfg.ioi_scoring)
+            }
             ContestFormat::Oi => {
                 if jury || self.results_published() {
                     let store = store::Store::open(&self.dir.results_db())?;
@@ -583,34 +663,75 @@ impl OnlineContest {
     /// the freeze it keeps updating with the team's own results, and its
     /// rank is unknown (0, shown as "?").
     pub fn team_row(&self, account: i64) -> Result<Option<Scoreboard>> {
-        let now = now_ms();
+        let frozen = self.frozen(now_ms());
         let cfg = self.config();
-        let accounts = self.board_accounts()?;
-        if !accounts.iter().any(|a| a.id == account) {
-            return Ok(None);
+        if cfg.format == ContestFormat::Oi || !frozen {
+            // Same as the row on the board everyone sees.
+            let b = self.scoreboard(Viewer::Contestant(account))?;
+            let rows: Vec<BoardRow> = b.rows.iter().filter(|r| r.row.account == account).cloned().collect();
+            if rows.is_empty() {
+                return Ok(None);
+            }
+            return Ok(Some(Scoreboard {
+                format: b.format,
+                problems: b.problems.clone(),
+                rows,
+                frozen: b.frozen,
+                hidden: b.hidden,
+            }));
         }
-        let frozen = self.frozen(now);
-        if cfg.format == ContestFormat::Oi {
-            let mut b = self.scoreboard(Viewer::Contestant(account))?;
-            b.rows.retain(|r| r.row.account == account);
-            return Ok(Some(b));
+        let mut c = self.board_cache(true);
+        if let Some(r) = c.rows.get(&account) {
+            return Ok(r.clone());
         }
+        let snap = match &c.snapshot {
+            Some(s) => s.clone(),
+            None => {
+                let accounts = self.board_accounts()?;
+                let subs = self.scoring_subs(&accounts, true)?;
+                let s = Arc::new((accounts, subs));
+                c.snapshot = Some(s.clone());
+                s
+            }
+        };
+        let (accounts, subs) = &*snap;
+        let row = self.frozen_team_row(&cfg, accounts, subs, account);
+        c.rows.insert(account, row.clone());
+        Ok(row)
+    }
+
+    /// Team row during the freeze: everyone else's frozen submissions stay
+    /// hidden, the team's own are shown.
+    fn frozen_team_row(
+        &self,
+        cfg: &OnlineConfig,
+        accounts: &[Account],
+        subs: &[Sub],
+        account: i64,
+    ) -> Option<Scoreboard> {
+        let a = accounts.iter().find(|a| a.id == account)?;
         let ids: Vec<i64> = accounts.iter().map(|a| a.id).collect();
         let problems = self.board_problems();
         let names: Vec<String> = problems.iter().map(|p| p.name.clone()).collect();
-        let subs = self.scoring_subs_for(&accounts, frozen, Some(account))?;
+        let subs: Vec<Sub> = subs
+            .iter()
+            .map(|s| {
+                let mut s = s.clone();
+                if s.account == account {
+                    s.hidden = false;
+                }
+                s
+            })
+            .collect();
         let rows = match cfg.format {
             ContestFormat::Ioi => scoring::ioi_board(&ids, &names, &subs, cfg.ioi_scoring),
-            _ => scoring::icpc_board(&ids, &names, &subs, &Self::icpc_rules(&cfg)),
+            _ => scoring::icpc_board(&ids, &names, &subs, &Self::icpc_rules(cfg)),
         };
-        let a = accounts.iter().find(|a| a.id == account).unwrap();
         let rows = rows
             .into_iter()
             .filter(|r| r.account == account)
             .map(|mut row| {
-                if frozen {
-                    row.rank = 0;
-                }
+                row.rank = 0;
                 BoardRow {
                     username: a.username.clone(),
                     display_name: if a.display_name.is_empty() { a.username.clone() } else { a.display_name.clone() },
@@ -619,7 +740,7 @@ impl OnlineContest {
                 }
             })
             .collect();
-        Ok(Some(Scoreboard { format: cfg.format, problems, rows, frozen, hidden: false }))
+        Some(Scoreboard { format: cfg.format, problems, rows, frozen: true, hidden: false })
     }
 
     /// Submission statistics per problem and contest interval for the
@@ -652,8 +773,8 @@ impl OnlineContest {
         let sub = self.db.submission(id)?.context("no such submission")?;
         self.db.set_ignored(id, ignored)?;
         self.db.log(now_ms(), actor, if ignored { "ignore" } else { "unignore" }, &format!("#{id}"));
-        (self.notify)(Notice::Submission { id, account: sub.account_id });
-        (self.notify)(Notice::Scoreboard);
+        self.emit(Notice::Submission { id, account: sub.account_id });
+        self.emit(Notice::Scoreboard);
         Ok(())
     }
 
@@ -703,7 +824,8 @@ impl OnlineContest {
     /// the offline engine; results go to `.oij/results.db`.
     pub fn judge_offline(&self, sink: &(dyn Fn(&Event) + Sync), cancel: &AtomicBool) -> Result<usize> {
         let contest = self.contest();
-        let engine = Engine::new(self.dir.clone(), contest.clone(), self.app.judge_settings(), self.app.effective_compilers());
+        let engine =
+            Engine::new(self.dir.clone(), contest.clone(), self.app.judge_settings(), self.app.effective_compilers());
         let accounts = self.board_accounts()?;
         let mut tasks = Vec::new();
         for a in &accounts {
@@ -716,14 +838,14 @@ impl OnlineContest {
         engine.run(
             tasks,
             &|ev: Event| {
-                if let Event::TaskDone { result, .. } = &ev {
+                if let Some(result) = ev.result() {
                     let _ = store.lock().save(result);
                 }
                 sink(&ev);
             },
             cancel,
         )?;
-        (self.notify)(Notice::Scoreboard);
+        self.emit(Notice::Scoreboard);
         Ok(n)
     }
 
@@ -736,7 +858,7 @@ impl OnlineContest {
         let password = password.filter(|p| !p.is_empty()).unwrap_or_else(crate::accounts::generate_password);
         a.id = 0;
         let id = self.db.create_account(&a, &hash_password(&password)?)?;
-        (self.notify)(Notice::Scoreboard);
+        self.emit(Notice::Scoreboard);
         Ok((id, password))
     }
 
@@ -771,7 +893,7 @@ impl OnlineContest {
 
     pub fn ask(&self, account: &Account, problem: &str, question: &str) -> Result<i64> {
         let id = self.db.add_clarification(Some(account.id), None, problem, question.trim(), now_ms())?;
-        (self.notify)(Notice::Clarification { id, from: Some(account.id), to: None, public: false });
+        self.emit(Notice::Clarification { id, from: Some(account.id), to: None, public: false });
         Ok(id)
     }
 
@@ -779,7 +901,7 @@ impl OnlineContest {
         self.db.answer_clarification(id, answer.trim(), public, now_ms())?;
         let c = self.db.clarifications(None)?.into_iter().find(|c| c.id == id);
         let from = c.as_ref().and_then(|c| c.from_account);
-        (self.notify)(Notice::Clarification { id, from, to: from, public });
+        self.emit(Notice::Clarification { id, from, to: from, public });
         Ok(())
     }
 
@@ -788,31 +910,31 @@ impl OnlineContest {
         let now = now_ms();
         let id = self.db.add_clarification(None, to, problem, "", now)?;
         self.db.answer_clarification(id, text.trim(), to.is_none(), now)?;
-        (self.notify)(Notice::Clarification { id, from: None, to, public: to.is_none() });
+        self.emit(Notice::Clarification { id, from: None, to, public: to.is_none() });
         Ok(id)
     }
 
     pub fn announce(&self, title: &str, body: &str) -> Result<i64> {
         let id = self.db.add_announcement(title.trim(), body.trim(), now_ms())?;
-        (self.notify)(Notice::Announcement { id });
+        self.emit(Notice::Announcement { id });
         Ok(id)
     }
 
     pub fn set_balloon_done(&self, id: i64, done: bool) -> Result<()> {
         self.db.set_balloon_done(id, done)?;
-        (self.notify)(Notice::Balloon);
+        self.emit(Notice::Balloon);
         Ok(())
     }
 
     pub fn print(&self, account: &Account, filename: &str, content: &str) -> Result<i64> {
         let id = self.db.add_print_job(account.id, filename, content, now_ms())?;
-        (self.notify)(Notice::Print);
+        self.emit(Notice::Print);
         Ok(id)
     }
 
     pub fn set_print_done(&self, id: i64, done: bool) -> Result<()> {
         self.db.set_print_done(id, done)?;
-        (self.notify)(Notice::Print);
+        self.emit(Notice::Print);
         Ok(())
     }
 
@@ -843,7 +965,10 @@ impl OnlineContest {
     pub fn statement(&self, p: &Problem) -> Option<PathBuf> {
         let data = self.dir.data();
         let rel = if p.statement.is_empty() {
-            ["statement.pdf", "statement.md", "statement.html"].iter().map(|f| format!("{}/{f}", p.name)).find(|r| data.join(r).is_file())?
+            ["statement.pdf", "statement.md", "statement.html"]
+                .iter()
+                .map(|f| format!("{}/{f}", p.name))
+                .find(|r| data.join(r).is_file())?
         } else {
             p.statement.clone()
         };

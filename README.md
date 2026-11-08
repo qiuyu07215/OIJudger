@@ -37,7 +37,7 @@
 oijudger-cli judge <比赛目录> [-p 试题]... [-c 选手]... [--all] [-j 线程数] [--two-phase] [--cache-limit MB]
 oijudger-cli results <比赛目录> [--contestant 选手]
 oijudger-cli stats <比赛目录>
-oijudger-cli export <比赛目录> -f html|htm|xlsx|csv [-o 文件]
+oijudger-cli export <比赛目录> -f html|htm|xlsx|csv|cdf [-o 文件]   # cdf：LemonLime 比赛文件（含成绩）
 oijudger-cli similarity <比赛目录> [-p 试题] [-t 阈值%]
 oijudger-cli clean <比赛目录>              # 删除编译缓存，评测结果保留
 oijudger-cli init <比赛目录>
@@ -59,8 +59,9 @@ title = "模拟赛"
 name = "sum"            # 试题名，也是默认的源文件名与数据目录
 title = "A + B"
 stdio = true            # 标准输入输出；否则读写 input_file / output_file（默认 sum.in / sum.out）
-comparator = "lines"    # lines（默认，忽略行末空格）| strict | tokens | real | binary
+comparator = "lines"    # lines（默认，忽略行末空格）| strict | tokens | ignore_spaces | real | binary
 # checker = { path = "sum/checker.cpp", kind = "testlib" }   # 或 kind = "lemon"
+# compile_flags = { cpp = "-O2 -std=c++14 -static -lm" }    # 本题的编译参数（替换“设置”中的）
 
 [[problem.subtask]]     # 即 LemonLime 的“测试点”，得分取其中各组数据的最低分
 score = 40
@@ -77,6 +78,21 @@ cases = [{ input = "sum/2.in", output = "sum/2.out" }, { input = "sum/3.in", out
 ```
 
 交互题：`kind = "interactive"`，并配置 `grader = { header_path, header_name, grader_path }`（NOI 风格）或 `interactor = "guess/interactor.cpp"`（testlib 交互器）。提交答案题：`kind = "answer"`，`answer_ext = "out"`。通信题：`kind = "communication"`，`communication = { sources = [...], interfaces = [...] }`；加上 `multi_program = true` 则每个源文件编译为独立程序，`interfaces` 中的 `grader.cpp` 单独编译运行并负责启动选手程序（与 LemonLime 的多程序通信题相同；grader 与选手程序在同一个沙箱内，进程数上限为程序数 + 1）。
+
+## 与 LemonLime 的兼容
+
+- **导入**：打开含 `.cdf` 的比赛文件夹（还没有 `contest.toml` 时），或运行 `oijudger-cli import-lemon <比赛.cdf>`。
+  - 比较方式“忽略多余空格”（LemonLime 默认）导入为 `ignore_spaces`：按单词比较，且单词须在同一行，与 LemonLime 判法相同。
+  - 每题的编译配置（如 `CCF`）从本机 LemonLime 的设置中读出实际参数，写入 `compile_flags`；本机没有该配置时给出提示，并使用 OIJudger 的编译设置。
+  - `.cdf` 里 LemonLime 已有的成绩不导入，由 OIJudger 重新评测。
+- **导出**：“比赛 → 导出成绩 → LemonLime 比赛（.cdf）”或 `oijudger-cli export <比赛目录> -f cdf`，生成带 OIJudger 成绩的 `.cdf`，可用 LemonLime 打开查看、导出。
+  - 默认保存为比赛目录下的 `<标题>-OIJudger.cdf`，不覆盖原来的 `.cdf`（LemonLime 按 `.cdf` 所在目录找 `data/`、`source/`，所以要放在比赛目录里）。
+  - 试题与原 `.cdf` 一致时，原样保留其试题设置；否则按 `contest.toml` 转换，LemonLime 没有的设置会给出提示。
+  - LemonLime 每个测试点只记整数分，小数分会四舍五入（会提示）。
+- **超时复测**（默认开启，可在“设置”中关闭，命令行 `--no-recheck`）：
+  - OIJudger 同时评测多个程序，吃内存的程序会互相抢内存带宽而变慢；LemonLime 一次只评一个，没有这个问题。
+  - 所以全部评完后，把超时的测试点在没有其他评测时逐个单独重测；某题重测后仍超时，就不再重测该题其余超时的点。
+  - 用 LemonLime 实测过的 47 名选手对比：并行评测时 1 道题因此被误判超时，单独重测后与 LemonLime 相同。
 
 ## 在线比赛（局域网）
 

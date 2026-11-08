@@ -365,7 +365,7 @@ fn judge_pairs(
     engine.run(
         tasks,
         &|ev| {
-            if let judge_core::Event::TaskDone { result, .. } = &ev {
+            if let Some(result) = ev.result() {
                 if let Err(e) = project.store.lock().save(result) {
                     save_err.lock().get_or_insert(e);
                 }
@@ -456,9 +456,9 @@ pub async fn get_stats(state: State<'_, AppState>) -> CmdResult<analysis::Contes
     blocking(move || project.stats().map_err(err)).await
 }
 
-/// `format`: csv | xlsx | html | htm.
+/// `format`: csv | xlsx | html | htm | cdf. Returns warnings.
 #[tauri::command]
-pub async fn export_results(format: String, path: String, state: State<'_, AppState>) -> CmdResult<()> {
+pub async fn export_results(format: String, path: String, state: State<'_, AppState>) -> CmdResult<Vec<String>> {
     let project = state.project()?;
     let fmt = oij::project::ExportFormat::parse(&format).ok_or_else(|| format!("unknown format {format}"))?;
     blocking(move || {

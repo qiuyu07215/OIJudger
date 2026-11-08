@@ -61,6 +61,7 @@ function verdictText(v: string) {
             {{ compiling ? t("judging.compiling", { done: p.compile_done, total: p.compile_total }) : t("progress.done", { done: p.done, total: p.total }) }}
             <template v-if="alsoCompiling"> · {{ t("judging.compiledShort", { done: p.compile_done, total: p.compile_total }) }}</template>
             <span v-if="judging && p.compile_paused" class="paused" :title="t('judging.pausedHint')"> · {{ t("judging.paused") }}</span>
+            <span v-if="p.recheck_total" :title="t('judging.recheckHint')"> · {{ t("judging.recheck", { done: p.recheck_done ?? 0, total: p.recheck_total }) }}</span>
           </span>
         </div>
         <div class="sub">

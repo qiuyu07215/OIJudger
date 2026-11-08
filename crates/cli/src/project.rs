@@ -147,7 +147,7 @@ impl Project {
         engine.run(
             tasks,
             &|ev: Event| {
-                if let Event::TaskDone { result, .. } = &ev {
+                if let Some(result) = ev.result() {
                     if let Err(e) = self.store.lock().save(result) {
                         save_err.lock().get_or_insert(e);
                     }
@@ -238,6 +238,8 @@ pub enum ExportFormat {
     Html,
     /// HTML without per-case details (much smaller).
     HtmlBrief,
+    /// LemonLime contest file with the results.
+    Cdf,
 }
 
 impl ExportFormat {
@@ -247,6 +249,7 @@ impl ExportFormat {
             "xlsx" | "excel" => Some(ExportFormat::Xlsx),
             "html" => Some(ExportFormat::Html),
             "htm" | "html-brief" => Some(ExportFormat::HtmlBrief),
+            "cdf" | "lemon" | "lemonlime" => Some(ExportFormat::Cdf),
             _ => None,
         }
     }
@@ -256,6 +259,7 @@ impl ExportFormat {
             ExportFormat::Xlsx => "xlsx",
             ExportFormat::Html => "html",
             ExportFormat::HtmlBrief => "htm",
+            ExportFormat::Cdf => "cdf",
         }
     }
 }
@@ -271,8 +275,13 @@ impl Project {
         Ok(analysis::compute(&self.contest, &self.contestants, &results, &groups))
     }
 
-    pub fn export(&self, format: ExportFormat, path: &Path, lang: &str) -> Result<()> {
+    /// Write the results in `format`; returns warnings (things the format
+    /// cannot represent exactly).
+    pub fn export(&self, format: ExportFormat, path: &Path, lang: &str) -> Result<Vec<String>> {
         let results = self.store.lock().load_all()?;
+        if format == ExportFormat::Cdf {
+            return lemon_import::export::write_cdf(path, &self.contest, &self.dir, &self.contestants, &results);
+        }
         let (_, groups) = self.groups();
         let stats = analysis::compute(&self.contest, &self.contestants, &results, &groups);
         let d = export::ExportData {
@@ -287,8 +296,9 @@ impl Project {
             ExportFormat::Xlsx => export::to_xlsx(&d, path)?,
             ExportFormat::Html => std::fs::write(path, export::to_html(&d, true))?,
             ExportFormat::HtmlBrief => std::fs::write(path, export::to_html(&d, false))?,
+            ExportFormat::Cdf => unreachable!(),
         }
-        Ok(())
+        Ok(Vec::new())
     }
 
     /// Source text of every contestant for a problem (first source file).

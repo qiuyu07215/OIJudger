@@ -36,13 +36,17 @@ export async function judgePairs(pairs: [string, string][], message: MessageApi)
   }
 }
 
-export async function exportAs(fmt: "html" | "htm" | "xlsx" | "csv", message: MessageApi) {
+export async function exportAs(fmt: "html" | "htm" | "xlsx" | "csv" | "cdf", message: MessageApi) {
   const base = (state.contest?.title || "results").replace(/[\\/:*?"<>|]/g, "_");
-  const path = await save({ defaultPath: `${state.root}\\${base}.${fmt}`, filters: [{ name: fmt.toUpperCase(), extensions: [fmt] }] });
+  // LemonLime finds data/ and source/ next to the .cdf: keep it in the contest
+  // folder, under a name that does not replace the original .cdf.
+  const name = fmt === "cdf" ? `${base}-OIJudger` : base;
+  const path = await save({ defaultPath: `${state.root}\\${name}.${fmt}`, filters: [{ name: fmt.toUpperCase(), extensions: [fmt] }] });
   if (!path) return;
   try {
-    await api.exportResults(fmt, path);
+    const warnings = await api.exportResults(fmt, path);
     message.success(t("stats.exported", { p: path }));
+    for (const w of warnings ?? []) message.warning(w, { duration: 10000 });
   } catch (e) {
     message.error(String(e));
   }

@@ -49,7 +49,7 @@ const settings: AppSettings = {
     { lang: "cpp", path: "C:\\mingw64\\bin\\g++.exe", args: "-O2 -std=c++17 -static -DONLINE_JUDGE" },
     { lang: "c", path: "C:\\mingw64\\bin\\gcc.exe", args: "-O2 -std=c11 -static -DONLINE_JUDGE -lm" },
   ],
-  workers: 0, pin_cores: true, overlap_compile: true, cache_limit_mb: 10240, patch_stack: true, output_limit_mb: 256, compile_time_ms: 20000, compile_memory_mb: 2048,
+  workers: 0, pin_cores: true, overlap_compile: true, cache_limit_mb: 10240, patch_stack: true, recheck_tle: true, output_limit_mb: 256, compile_time_ms: 20000, compile_memory_mb: 2048,
   checker_time_ms: 10000, checker_memory_mb: 2048, language: "zh-CN", recent: ["D:\\contests\\noip-mock-3", "D:\\contests\\csp-s-2026"],
 };
 

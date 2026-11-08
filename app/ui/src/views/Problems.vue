@@ -25,6 +25,9 @@ const clone = <T,>(x: T): T => JSON.parse(JSON.stringify(x));
 watch(() => state.contest, (c) => { if (c) { draft.value = clone(c); current.value = Math.min(current.value, Math.max(0, c.problem.length - 1)); } }, { immediate: true });
 const dirty = computed(() => !!draft.value && !!state.contest && JSON.stringify(draft.value) !== JSON.stringify(state.contest));
 const prob = computed<Problem | undefined>(() => draft.value?.problem[current.value]);
+function setCppFlags(v: string) {
+  if (prob.value) prob.value.compile_flags = { ...prob.value.compile_flags, cpp: v };
+}
 
 async function save() {
   if (!draft.value) return;
@@ -191,7 +194,7 @@ const lines = (s: string) => s.split(/\r?\n/).map((x) => x.trim()).filter(Boolea
 
 const kindOptions = computed(() => (["traditional", "answer", "interactive", "communication"] as const).map((k) => ({ label: t(`kind.${k}`), value: k })));
 const subfolderOptions = computed(() => (["auto", "inside", "outside"] as const).map((k) => ({ label: t(`subfolder.${k}`), value: k })));
-const comparatorOptions = computed(() => (["lines", "strict", "tokens", "real", "binary"] as const).map((k) => ({ label: t(`comparator.${k}`), value: k })));
+const comparatorOptions = computed(() => (["lines", "strict", "tokens", "ignore_spaces", "real", "binary"] as const).map((k) => ({ label: t(`comparator.${k}`), value: k })));
 const checkerKindOptions = computed(() => (["testlib", "lemon"] as const).map((k) => ({ label: t(`checkerKind.${k}`), value: k })));
 
 // ----- subtasks ------------------------------------------------------------
@@ -443,6 +446,14 @@ function applyPattern() {
               <n-input v-model:value="prob.source_name" :placeholder="prob.name" />
             </n-form-item-gi>
             <n-form-item-gi :label="t('problems.subfolder')"><n-select v-model:value="prob.subfolder" :options="subfolderOptions" /></n-form-item-gi>
+            <n-form-item-gi v-if="prob.kind !== 'answer'" :label="t('problems.compileFlagsCpp')">
+              <n-input
+                :value="prob.compile_flags?.cpp ?? ''"
+                :placeholder="t('problems.compileFlagsHint')"
+                class="mono"
+                @update:value="setCppFlags"
+              />
+            </n-form-item-gi>
             <n-form-item-gi v-if="prob.kind !== 'answer'" :label="t('problems.compileArgs')">
               <n-input v-model:value="prob.compile_args" placeholder="-DLOCAL" class="mono" />
             </n-form-item-gi>

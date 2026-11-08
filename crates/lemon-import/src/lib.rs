@@ -15,7 +15,10 @@ use judge_core::model::{
 };
 use serde_json::Value;
 
-const DEPENDENCE_FLAG: &str = "_lemon_SUbtaskDEPENDENCE_fLAg";
+pub mod export;
+pub mod settings;
+
+pub(crate) const DEPENDENCE_FLAG: &str = "_lemon_SUbtaskDEPENDENCE_fLAg";
 
 pub struct Imported {
     pub contest: Contest,
@@ -55,7 +58,15 @@ fn ident(source: &str, title: &str, index: usize) -> String {
     }
 }
 
+/// Import a contest, looking up compiler configurations in this computer's
+/// LemonLime settings.
 pub fn parse(json: &str) -> Result<Imported> {
+    parse_with(json, &settings::compiler_arguments)
+}
+
+/// Import a contest; `compiler_args(compiler, configuration)` gives the
+/// arguments of a LemonLime compiler configuration.
+pub fn parse_with(json: &str, compiler_args: &dyn Fn(&str, &str) -> Option<String>) -> Result<Imported> {
     let root: Value = serde_json::from_str(json).context("not a LemonLime JSON contest file")?;
     let mut warnings = Vec::new();
     let mut contest = Contest { title: s(&root, "contestTitle").to_string(), online: None, problems: Vec::new() };
@@ -92,7 +103,7 @@ pub fn parse(json: &str) -> Result<Imported> {
         let spj = norm(s(t, "specialJudge"));
         match t.get("comparisonMode").and_then(Value::as_i64).unwrap_or(1) {
             0 => p.comparator = Comparator::Strict,
-            1 => p.comparator = Comparator::Lines,
+            1 => p.comparator = Comparator::IgnoreSpaces,
             2 => {
                 p.comparator = Comparator::Lines;
                 warnings.push(format!("{title}: external diff mode is replaced by line comparison"));
@@ -105,6 +116,32 @@ pub fn parse(json: &str) -> Result<Imported> {
             4 => p.checker = Some(Checker { path: spj.clone(), kind: CheckerKind::Lemon }),
             5 => p.checker = Some(Checker { path: spj.clone(), kind: CheckerKind::Testlib }),
             m => warnings.push(format!("{title}: unknown comparison mode {m}")),
+        }
+
+        // Compiler configuration per compiler, e.g. {"g++": "CCF"}.
+        for (compiler, conf) in t.get("compilerConfiguration").and_then(Value::as_object).into_iter().flatten() {
+            let (Some(conf), Some(lang)) = (conf.as_str(), settings::compiler_lang(compiler)) else { continue };
+            if conf.eq_ignore_ascii_case("disable") {
+                continue;
+            }
+            match compiler_args(compiler, conf) {
+                Some(args) => {
+                    let args = settings::strip_placeholders(&args);
+                    match lang {
+                        judge_core::Lang::Cpp => p.compile_flags.cpp = args,
+                        judge_core::Lang::C => p.compile_flags.c = args,
+                    }
+                }
+                None => {
+                    let w = format!(
+                        "LemonLime compiler configuration \"{conf}\" of {compiler} is not set up on this computer; \
+                         OIJudger's compiler settings are used"
+                    );
+                    if !warnings.contains(&w) {
+                        warnings.push(w);
+                    }
+                }
+            }
         }
 
         match t.get("taskType").and_then(Value::as_i64).unwrap_or(0) {
@@ -226,8 +263,21 @@ mod tests {
     }"#;
 
     #[test]
+    fn compiler_configurations() {
+        let lookup = |c: &str, conf: &str| {
+            (c == "g++" && conf == "CCF").then(|| "-o %s %s.* -lm -O2 -std=c++14 -static".to_string())
+        };
+        let im = parse_with(SAMPLE.replace("\"default\"", "\"CCF\"").as_str(), &lookup).unwrap();
+        assert_eq!(im.contest.problems[0].compile_flags.cpp, "-lm -O2 -std=c++14 -static");
+        assert!(im.contest.problems[1].compile_flags.is_empty());
+        let im = parse_with(SAMPLE, &lookup).unwrap();
+        assert!(im.contest.problems[0].compile_flags.is_empty());
+        assert_eq!(im.warnings.iter().filter(|w| w.contains("\"default\" of g++")).count(), 1);
+    }
+
+    #[test]
     fn imports_sample() {
-        let im = parse(SAMPLE).unwrap();
+        let im = parse_with(SAMPLE, &|_, _| None).unwrap();
         let c = &im.contest;
         assert_eq!(c.title, "Lemon Day 1");
         assert_eq!(c.problems.len(), 3);

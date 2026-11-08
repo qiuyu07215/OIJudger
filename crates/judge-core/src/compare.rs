@@ -58,6 +58,7 @@ pub fn compare_bytes(kind: Comparator, eps: f64, out: &[u8], ans: &[u8]) -> Comp
         Comparator::Lines => lines(out, ans, true),
         Comparator::Strict => lines(out, ans, false),
         Comparator::Tokens => tokens(out, ans, None),
+        Comparator::IgnoreSpaces => ignore_spaces(out, ans),
         Comparator::Real => tokens(out, ans, Some(eps)),
         Comparator::Binary => {
             if out == ans {
@@ -198,6 +199,64 @@ fn tokens(out: &[u8], ans: &[u8], eps: Option<f64>) -> Compared {
     }
 }
 
+/// C `isspace`: what LemonLime skips between tokens.
+fn c_space(c: u8) -> bool {
+    matches!(c, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c)
+}
+
+/// Tokens with the line they are on (`\n`, `\r` and `\r\n` end a line).
+struct LineTokens<'a> {
+    s: &'a [u8],
+    pos: usize,
+    line: usize,
+}
+
+impl<'a> Iterator for LineTokens<'a> {
+    type Item = (usize, &'a [u8]);
+    fn next(&mut self) -> Option<(usize, &'a [u8])> {
+        while self.pos < self.s.len() && c_space(self.s[self.pos]) {
+            match self.s[self.pos] {
+                b'\n' => self.line += 1,
+                b'\r' if self.s.get(self.pos + 1) != Some(&b'\n') => self.line += 1,
+                _ => {}
+            }
+            self.pos += 1;
+        }
+        let start = self.pos;
+        while self.pos < self.s.len() && !c_space(self.s[self.pos]) {
+            self.pos += 1;
+        }
+        (self.pos > start).then(|| (self.line, &self.s[start..self.pos]))
+    }
+}
+
+/// LemonLime's "ignore extra spaces": tokens must match and be on the same
+/// lines; spaces and tabs within a line and trailing blank lines do not
+/// matter.
+fn ignore_spaces(out: &[u8], ans: &[u8]) -> Compared {
+    let mut a = LineTokens { s: out, pos: 0, line: 1 };
+    let mut b = LineTokens { s: ans, pos: 0, line: 1 };
+    loop {
+        match (a.next(), b.next()) {
+            (None, None) => return Compared::ok(),
+            (Some((l, x)), None) => {
+                return Compared::wa(format!("Line {l}: expected end of file, found `{}`", show(x)))
+            }
+            (None, Some((l, y))) => {
+                return Compared::wa(format!("Line {l}: expected `{}`, found end of file", show(y)))
+            }
+            (Some((lx, x)), Some((ly, y))) => {
+                if x != y {
+                    return Compared::wa(format!("Line {ly}: expected `{}`, found `{}`", show(y), show(x)));
+                }
+                if lx != ly {
+                    return Compared::wa(format!("`{}` is on line {lx}, expected on line {ly}", show(x)));
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -229,6 +288,24 @@ mod tests {
     fn token_mode() {
         assert!(ok(Comparator::Tokens, "1\n2   3", " 1 2\n3\n"));
         assert!(!ok(Comparator::Tokens, "1 2", "1 2 3"));
+    }
+
+    #[test]
+    fn ignore_spaces_mode() {
+        let k = Comparator::IgnoreSpaces;
+        assert!(ok(k, "1  2\t3\n4\n", "1 2 3\n4"));
+        assert!(ok(k, " 1 2 \r\n3\r\n\r\n\n", "1 2\n3\n"));
+        assert!(ok(k, "1\r2", "1\n2"));
+        assert!(ok(k, "", "\n\n"));
+        assert!(!ok(k, "1\n2", "1 2"));
+        assert!(!ok(k, "1 2", "1\n2"));
+        assert!(!ok(k, "\n1", "1"));
+        assert!(!ok(k, "1\n\n2", "1\n2"));
+        assert!(!ok(k, "1 2", "1 2 3"));
+        assert!(!ok(k, "1 2 3", "1 2"));
+        assert!(!ok(k, "1 22", "1 2"));
+        let r = compare_bytes(k, 0.0, b"1\n5\n", b"1\n4\n");
+        assert_eq!(r.message, "Line 2: expected `4`, found `5`");
     }
 
     #[test]
