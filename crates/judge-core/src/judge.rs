@@ -68,10 +68,14 @@ impl Default for Settings {
 #[derive(Debug, Clone, Default)]
 pub struct Toolset {
     pub compilers: Vec<(CompilerConfig, String)>,
+    /// `PATH` for judged programs, checkers and interactors: the compilers'
+    /// runtime DLL folders, then System32 (see [`crate::compile::runtime_path`]).
+    pub runtime_path: std::ffi::OsString,
 }
 
 impl Toolset {
     pub fn new(configs: Vec<CompilerConfig>) -> Toolset {
+        let runtime_path = crate::compile::runtime_path(&configs);
         Toolset {
             compilers: configs
                 .into_iter()
@@ -80,6 +84,7 @@ impl Toolset {
                     (c, v)
                 })
                 .collect(),
+            runtime_path,
         }
     }
     pub fn get(&self, lang: Lang) -> Option<&(CompilerConfig, String)> {
@@ -478,7 +483,17 @@ fn evaluate(
 ) -> Result<(Verdict, f64, String)> {
     if let Some(Ok(checker)) = &tools.checker {
         let kind = problem.checker.as_ref().map(|c| c.kind).unwrap_or_default();
-        let r = run_checker(worker, checker, kind, input, output, answer, full, &ctx.settings.checker)?;
+        let r = run_checker(
+            worker,
+            checker,
+            kind,
+            input,
+            output,
+            answer,
+            full,
+            &ctx.settings.checker,
+            &ctx.tools.runtime_path,
+        )?;
         return Ok((r.verdict, r.ratio, r.message));
     }
     let c = compare_files(problem.comparator, problem.real_eps, output, answer)
@@ -518,6 +533,7 @@ fn run_case(
     let stderr_path = run_dir.join(STDERR_NAME);
     // `exe` is either a name in the run directory or an absolute path.
     let mut spec = sandbox::RunSpec::new(run_dir.join(exe), &run_dir, limits);
+    with_runtime_path(&mut spec, ctx);
     spec.stderr = sandbox::Stdio::File(File::create(&stderr_path)?);
     spec.limits.watch_files.push(stderr_path.clone());
 
@@ -573,6 +589,15 @@ fn run_case(
     Ok(cr)
 }
 
+/// Let a dynamically linked program (built without `-static`, or a
+/// prebuilt checker) find libstdc++-6.dll, libgcc_s_seh-1.dll,
+/// libwinpthread-1.dll etc. in the compiler's folder.
+fn with_runtime_path(spec: &mut sandbox::RunSpec, ctx: &JudgeContext) {
+    if !ctx.tools.runtime_path.is_empty() {
+        spec.env.push(("PATH".into(), ctx.tools.runtime_path.clone()));
+    }
+}
+
 fn program_failure(r: &sandbox::RunResult) -> Option<Verdict> {
     use sandbox::Outcome::*;
     match r.outcome {
@@ -625,6 +650,7 @@ fn run_interactive(
     il.output_bytes = 256 << 20;
     il.watch_files = vec![tout.clone(), ierr.clone()];
     let mut ispec = sandbox::RunSpec::new(interactor, &check_dir, il);
+    with_runtime_path(&mut ispec, ctx);
     ispec.args = vec![input.into(), tout.clone().into(), answer.into()];
     ispec.stdin = sandbox::Stdio::File(to_interactor_r);
     ispec.stdout = sandbox::Stdio::File(to_contestant_w);
@@ -815,7 +841,7 @@ struct ExeGrant<'a> {
     exe: PathBuf,
 }
 
-static EXE_ACL_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+use crate::workspace::EXE_ACL_LOCK;
 
 impl<'a> ExeGrant<'a> {
     fn new(worker: &'a Worker, exe: &Path) -> Result<ExeGrant<'a>> {

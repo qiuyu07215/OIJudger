@@ -232,12 +232,24 @@ impl Container {
 
     /// Start a process; use [`Child::wait`] to collect the result.
     pub fn spawn(&self, spec: RunSpec) -> Result<Child> {
-        spawn(self.sid.as_ref(), spec)
+        create(self.sid.as_ref(), spec, true)
     }
 
     /// Start a process and wait for it.
     pub fn run(&self, spec: RunSpec) -> Result<RunResult> {
         Ok(self.spawn(spec)?.wait())
+    }
+
+    /// Create a process for `program` suspended and kill it before it runs a
+    /// single instruction. The first start of a newly written executable
+    /// makes antivirus software scan it (hundreds of milliseconds, inside
+    /// `CreateProcess`); doing that ahead of time keeps the wait off the
+    /// judging threads. The container needs read access to `program`.
+    pub fn preload(&self, program: &Path) -> Result<()> {
+        let dir = program.parent().unwrap_or(Path::new("."));
+        let spec = RunSpec::new(program, dir, Limits::program(1000, 0));
+        create(self.sid.as_ref(), spec, false)?.kill();
+        Ok(())
     }
 }
 
@@ -439,7 +451,8 @@ unsafe fn set_job_info<T>(job: &OwnedHandle, class: i32, value: &T, what: &str) 
     Ok(())
 }
 
-fn spawn(sid: Option<&Sid>, mut spec: RunSpec) -> Result<Child> {
+/// Create the process; `resume` = false leaves its first thread suspended.
+fn create(sid: Option<&Sid>, mut spec: RunSpec, resume: bool) -> Result<Child> {
     let stdin = stdio_file(std::mem::replace(&mut spec.stdin, Stdio::Null))?;
     let stdout = stdio_file(std::mem::replace(&mut spec.stdout, Stdio::Null))?;
     let stderr = stdio_file(std::mem::replace(&mut spec.stderr, Stdio::Null))?;
@@ -563,8 +576,10 @@ fn spawn(sid: Option<&Sid>, mut spec: RunSpec) -> Result<Child> {
     let process = owned(pi.hProcess, "process handle")?;
     let thread = owned(pi.hThread, "thread handle")?;
     let start = Instant::now();
-    unsafe {
-        ResumeThread(thread.as_raw_handle() as HANDLE);
+    if resume {
+        unsafe {
+            ResumeThread(thread.as_raw_handle() as HANDLE);
+        }
     }
     drop(thread);
     // Our copies of the child's std handles are no longer needed; for pipes

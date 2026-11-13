@@ -48,6 +48,7 @@ pub fn run_checker(
     answer: &Path,
     full_score: f64,
     limits: &CheckerLimits,
+    runtime_path: &std::ffi::OsStr,
 ) -> Result<CheckerOutcome> {
     let dir = worker.check_dir();
     worker.clean_dir(&dir, &[])?;
@@ -60,6 +61,9 @@ pub fn run_checker(
     l.output_bytes = 64 << 20;
     l.watch_files = vec![out_file.clone(), err_file.clone()];
     let mut spec = sandbox::RunSpec::new(exe, &dir, l);
+    if !runtime_path.is_empty() {
+        spec.env.push(("PATH".into(), runtime_path.into()));
+    }
     spec.args = vec![input.into(), output.into(), answer.into()];
     if kind == CheckerKind::Lemon {
         spec.args.push(format!("{}", full_score.round() as i64).into());

@@ -108,6 +108,33 @@ pub fn detect_compilers() -> Vec<CompilerConfig> {
     out
 }
 
+/// Runtime DLLs of MinGW-w64 GCC that programs built without `-static` (or
+/// with `-fopenmp`, `__float128`, ...) load. The portable bundle must ship them.
+pub const RUNTIME_DLLS: [&str; 6] = [
+    "libstdc++-6.dll",
+    "libgcc_s_seh-1.dll",
+    "libwinpthread-1.dll",
+    "libgomp-1.dll",
+    "libquadmath-0.dll",
+    "libatomic-1.dll",
+];
+
+/// `PATH` for running judged programs: the folders of `compilers` (where
+/// MinGW keeps its runtime DLLs), then System32. Those folders are already
+/// readable inside the sandbox (see `Toolchain::grant_read`).
+pub fn runtime_path(compilers: &[CompilerConfig]) -> std::ffi::OsString {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    for c in compilers {
+        let bin = c.bin_dir();
+        if !bin.as_os_str().is_empty() && !dirs.contains(&bin) {
+            dirs.push(bin);
+        }
+    }
+    let sysroot = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
+    dirs.push(Path::new(&sysroot).join("System32"));
+    std::env::join_paths(dirs).unwrap_or_default()
+}
+
 /// A command that never opens a console window (the GUI has no console).
 fn hidden(mut c: Command) -> Command {
     #[cfg(windows)]
@@ -359,6 +386,14 @@ impl BuildRequest {
 
 const LOG_LIMIT: usize = 16 * 1024;
 
+/// Linker output name. Not `.exe`: antivirus software scans a newly written
+/// executable when it is closed and blocks every access (our move into the
+/// cache) until the scan ends — 0.4 s on average and up to several seconds
+/// with many compilers at once, idling the compile thread. A `.bin` file is
+/// left alone until it is first run, and then scanned once (instead of twice:
+/// on close and again on first run).
+const OUT_NAME: &str = "__oij_out.bin";
+
 fn read_log(path: &Path) -> String {
     let data = std::fs::read(path).unwrap_or_default();
     let mut s = String::from_utf8_lossy(&data[..data.len().min(LOG_LIMIT)]).into_owned();
@@ -462,7 +497,7 @@ pub fn build(
     // linked program is 0.5-2.5 MB otherwise); running them is unaffected.
     args.push("-s".into());
     args.push("-o".into());
-    args.push("__oij_out.exe".into());
+    args.push(OUT_NAME.into());
     for (src, name, main) in &req.files {
         let dst = dir.join(name);
         if let Some(parent) = dst.parent() {
@@ -514,13 +549,12 @@ pub fn build(
     }
 
     let mut text = read_log(&log_path);
-    let out_exe = dir.join("__oij_out.exe");
+    let out_exe = dir.join(OUT_NAME);
     std::fs::create_dir_all(cache_dir)?;
     if r.outcome == sandbox::Outcome::Ok && out_exe.is_file() {
         std::fs::write(&cached_log, &text)?;
-        // Move, not copy: every newly written executable is scanned again by
-        // antivirus software (hundreds of milliseconds each, serialised
-        // across all compilers); a moved file keeps its scan result.
+        // Move, not copy: a copy is a new file that antivirus software scans
+        // again; a moved file keeps its scan result.
         let tmp = cache_dir.join(format!("{key}.{}.tmp", worker.index()));
         if retry_io(|| std::fs::rename(&out_exe, &tmp)).is_ok() {
             // Drop the build sandbox's access inherited from the build folder.
@@ -536,6 +570,7 @@ pub fn build(
                 .context("storing compiled program")?;
             Lease::acquire(&mut t, &cached_exe)
         };
+        worker.preload(&cached_exe);
         if std::env::var_os("OIJ_DEBUG").is_some() {
             eprintln!("[w{}] stored {:?} total {} ms", worker.index(), req.files[0].1, t_enter.elapsed().as_millis());
         }

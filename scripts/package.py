@@ -8,6 +8,11 @@ usage: python scripts/package.py <target_dir> [mingw_dir]
               (default C:\\mingw64; skipped if missing)
 
 Writes dist/OIJudger-<ver>-win64.zip and dist/OIJudger-<ver>-win64-portable.zip.
+
+The portable archive bundles MinGW, including every runtime DLL that judged
+programs may load (RUNTIME_DLLS in crates/judge-core/src/compile.rs: programs
+built without -static, with -fopenmp, prebuilt checkers, ...). Judged programs
+get mingw64/bin on their PATH, so the DLLs must be there.
 """
 import os
 import re
@@ -59,12 +64,35 @@ def zip_dir(src, out, extra=None):
 
 zip_dir(stage, os.path.join(dist, f"{name}.zip"))
 
+def runtime_dlls():
+    src = open(os.path.join(ROOT, "crates", "judge-core", "src", "compile.rs"), encoding="utf-8").read()
+    block = re.search(r"pub const RUNTIME_DLLS: \[&str; \d+\] = \[(.*?)\];", src, re.S).group(1)
+    return re.findall(r'"([^"]+)"', block)
+
+
 if os.path.isdir(mingw):
     bundled = os.path.join(dist, "mingw64-stage")
     if os.path.exists(bundled):
         shutil.rmtree(bundled)
     # opt/ only holds gdb's Python runtime: not needed to compile.
     shutil.copytree(mingw, bundled, ignore=shutil.ignore_patterns("opt"))
+    bundled_bin = os.path.join(bundled, "bin")
+    # Some MinGW builds keep runtime DLLs only next to the libraries; judged
+    # programs look in bin (their PATH), so make sure each one is there.
+    lib_dirs = [os.path.join(bundled, "x86_64-w64-mingw32", "lib"), os.path.join(bundled, "x86_64-w64-mingw32", "bin")]
+    missing = []
+    for dll in runtime_dlls():
+        if os.path.isfile(os.path.join(bundled_bin, dll)):
+            continue
+        found = next((os.path.join(d, dll) for d in lib_dirs if os.path.isfile(os.path.join(d, dll))), None)
+        if found:
+            shutil.copy2(found, bundled_bin)
+        else:
+            missing.append(dll)
+    if missing:
+        sys.exit(f"MinGW in {mingw} lacks runtime DLLs: {', '.join(missing)}")
+    dlls = sorted(f for f in os.listdir(bundled_bin) if f.lower().endswith(".dll"))
+    print(f"bundled runtime DLLs in mingw64/bin: {', '.join(dlls)}")
     zip_dir(stage, os.path.join(dist, f"{name}-portable.zip"), [(bundled, os.path.join(name, "mingw64"))])
     shutil.rmtree(bundled)
 else:

@@ -140,6 +140,46 @@ pub fn run(settings: &AppSettings, report: &mut dyn FnMut(&ProbeReport)) -> Resu
         let s = std::fs::read_to_string(&out)?;
         Ok((r.outcome == Outcome::Ok && s.trim() == "42", format!("{:?}, {} ms", r.outcome, r.cpu_ms)))
     });
+    check("dynamically linked program finds the runtime DLLs", &|| {
+        // Built without -static: imports libstdc++-6.dll etc. from the
+        // compiler's folder, as prebuilt checkers often do.
+        let src = ctx.secret_dir.join("dynamic.cpp");
+        std::fs::write(
+            &src,
+            "#include <iostream>
+#include <string>
+int main() { long long a, b; std::cin >> a >> b;              std::cout << std::to_string(a + b) << std::endl; }
+",
+        )?;
+        let mut compiler = ctx.compiler.clone();
+        compiler.args = compiler.args.split_whitespace().filter(|a| *a != "-static").collect::<Vec<_>>().join(" ");
+        let req = BuildRequest { files: vec![(src, "dynamic.cpp".into(), true)], compiler, extra_args: String::new() };
+        let exe = match build(ctx.worker, &req, &ctx.version, ctx.cache, &BuildLimits::default())? {
+            BuildOutput::Ok { exe, .. } => exe,
+            BuildOutput::Failed { log } => anyhow::bail!("compile failed:
+{log}"),
+        };
+        let image = std::fs::read(&exe)?;
+        let imports: Vec<&str> = judge_core::compile::RUNTIME_DLLS
+            .iter()
+            .copied()
+            .filter(|d| image.windows(d.len()).any(|w| w.eq_ignore_ascii_case(d.as_bytes())))
+            .collect();
+        let input = ctx.secret_dir.join("in.txt");
+        std::fs::write(&input, "20 22")?;
+        let dir = ctx.worker.run_dir();
+        ctx.worker.clean_dir(&dir, &[])?;
+        std::fs::copy(&exe, dir.join("d.exe"))?;
+        let out = dir.join("out.txt");
+        let mut spec = RunSpec::new(dir.join("d.exe"), &dir, lim())
+            .env("PATH", judge_core::compile::runtime_path(std::slice::from_ref(&ctx.compiler)));
+        spec.stdin = Stdio::File(File::open(&input)?);
+        spec.stdout = Stdio::File(File::create(&out)?);
+        let r = ctx.worker.container().run(spec)?;
+        let s = std::fs::read_to_string(&out)?;
+        let ok = r.outcome == Outcome::Ok && s.trim() == "42";
+        Ok((ok, format!("{}; imports {}", r.describe(), if imports.is_empty() { "-".into() } else { imports.join(", ") })))
+    });
     check("network is blocked (loopback, internet, DNS)", &|| {
         let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
         let port = listener.local_addr()?.port().to_string();

@@ -45,6 +45,8 @@ pub struct Worker {
     run_cur: Mutex<PathBuf>,
     build_cur: Mutex<PathBuf>,
     seq: AtomicU64,
+    /// Queue of the workspace's preloader (see [`Worker::preload`]).
+    preload: Option<std::sync::mpsc::Sender<PathBuf>>,
 }
 
 impl Worker {
@@ -87,6 +89,14 @@ impl Worker {
         let old = std::mem::replace(&mut *cur.lock(), dir.clone());
         defer_delete(old);
         Ok(dir)
+    }
+    /// Have a freshly compiled program started (suspended, never run) on a
+    /// background thread, so the antivirus scan of a new executable happens
+    /// now instead of delaying its first judged run.
+    pub fn preload(&self, exe: &Path) {
+        if let Some(tx) = &self.preload {
+            let _ = tx.send(exe.to_path_buf());
+        }
     }
     /// Scratch directory for checkers / interactors.
     pub fn check_dir(&self) -> PathBuf {
@@ -154,6 +164,63 @@ fn remove_file_retry(p: &Path) -> std::io::Result<()> {
     Err(last.unwrap())
 }
 
+/// Serialises ACL changes of cached programs: an ACL update is
+/// read-modify-write, and several sandboxes may use one program at once.
+pub(crate) static EXE_ACL_LOCK: Mutex<()> = Mutex::new(());
+
+/// Background threads that start new programs suspended in their own
+/// sandbox identity and kill them at once (see [`sandbox::Container::preload`]).
+struct Preloader {
+    tx: Option<std::sync::mpsc::Sender<PathBuf>>,
+    threads: Vec<std::thread::JoinHandle<()>>,
+}
+
+const PRELOAD_THREADS: usize = 4;
+
+impl Preloader {
+    fn start(tag: &str) -> Result<Preloader> {
+        let container = std::sync::Arc::new(
+            sandbox::Container::open(&preload_profile(tag)).context("creating sandbox for preloading programs")?,
+        );
+        let (tx, rx) = std::sync::mpsc::channel::<PathBuf>();
+        let rx = std::sync::Arc::new(std::sync::Mutex::new(rx));
+        let threads = (0..PRELOAD_THREADS)
+            .map(|i| {
+                let (container, rx) = (container.clone(), rx.clone());
+                std::thread::Builder::new()
+                    .name(format!("oij-preload-{i}"))
+                    .spawn(move || loop {
+                        let next = rx.lock().map(|r| r.recv());
+                        let Ok(Ok(exe)) = next else { break };
+                        let granted = {
+                            let _g = EXE_ACL_LOCK.lock();
+                            container.grant_read(&exe)
+                        };
+                        if granted.is_err() {
+                            continue;
+                        }
+                        let t0 = std::time::Instant::now();
+                        let r = container.preload(&exe);
+                        if std::env::var_os("OIJ_DEBUG").is_some() {
+                            eprintln!("preloaded {}: {:?} in {} ms", exe.display(), r.err(), t0.elapsed().as_millis());
+                        }
+                        let _g = EXE_ACL_LOCK.lock();
+                        let _ = container.revoke(&exe);
+                    })
+                    .context("starting preload thread")
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Preloader { tx: Some(tx), threads })
+    }
+
+    fn stop(&mut self) {
+        self.tx.take();
+        for t in self.threads.drain(..) {
+            let _ = t.join();
+        }
+    }
+}
+
 /// All workers of one judging session.
 pub struct Workspace {
     pub workers: Vec<Worker>,
@@ -164,6 +231,7 @@ pub struct Workspace {
     tag: String,
     /// Held open without sharing so other instances know we are alive.
     lock: Option<std::fs::File>,
+    preloader: Preloader,
 }
 
 const LOCK_FILE: &str = ".lock";
@@ -242,6 +310,7 @@ impl Workspace {
                 .share_mode(0)
                 .open(root.join(LOCK_FILE))?
         };
+        let mut preloader = Preloader::start(&tag)?;
         let masks = sandbox::performance_core_masks();
         let pinned = pin && count <= masks.len();
         let mut workers = Vec::with_capacity(count);
@@ -252,19 +321,33 @@ impl Workspace {
                 (true, false) => 0,
                 (false, _) => builder_affinity,
             };
-            let w = Worker::create(&root, &tag, i, affinity)?;
+            let w = match Worker::create(&root, &tag, i, affinity, preloader.tx.clone()) {
+                Ok(w) => w,
+                Err(e) => {
+                    // The workers hold senders: drop them so the threads end.
+                    drop((std::mem::take(&mut workers), std::mem::take(&mut extra)));
+                    preloader.stop();
+                    return Err(e);
+                }
+            };
             if i < count {
                 workers.push(w);
             } else {
                 extra.push(w);
             }
         }
-        Ok(Workspace { workers, builders: extra, root, tag, lock: Some(lock) })
+        Ok(Workspace { workers, builders: extra, root, tag, lock: Some(lock), preloader })
     }
 }
 
 impl Worker {
-    fn create(root: &Path, tag: &str, i: usize, affinity: usize) -> Result<Worker> {
+    fn create(
+        root: &Path,
+        tag: &str,
+        i: usize,
+        affinity: usize,
+        preload: Option<std::sync::mpsc::Sender<PathBuf>>,
+    ) -> Result<Worker> {
         // Per-workspace names: another workspace (in this or another
         // process) must not share container identities, and thus file
         // access, with this one.
@@ -292,6 +375,7 @@ impl Worker {
             run_cur: Mutex::new(run0),
             build_cur: Mutex::new(build0),
             seq: AtomicU64::new(1),
+            preload,
         })
     }
 }
@@ -304,7 +388,12 @@ fn build_profile(tag: &str, i: usize) -> String {
     format!("OIJudger.{tag}.B{i}")
 }
 
+fn preload_profile(tag: &str) -> String {
+    format!("OIJudger.{tag}.P")
+}
+
 fn delete_profiles(tag: &str, count: usize) {
+    sandbox::Container::delete_profile(&preload_profile(tag));
     for i in 0..count {
         sandbox::Container::delete_profile(&run_profile(tag, i));
         sandbox::Container::delete_profile(&build_profile(tag, i));
@@ -319,6 +408,8 @@ impl Drop for Workspace {
         let n = self.workers.len() + self.builders.len();
         self.workers.clear();
         self.builders.clear();
+        // Workers held the other senders: the preload threads now finish.
+        self.preloader.stop();
         delete_profiles(&self.tag, n);
         drop(self.lock.take());
         defer_delete(self.root.clone());

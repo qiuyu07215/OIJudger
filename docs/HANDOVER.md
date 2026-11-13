@@ -5,7 +5,7 @@
 ## 1. 现状
 
 - 仓库：<https://github.com/qiuyu07215/OIJudger>（公开，MIT 许可），主分支 `master`。
-- 最新版本：**v0.2.1**（在线比赛榜单缓存；与 LemonLime 的兼容：忽略多余空格、编译配置、超时复测、导出 .cdf）（Releases 页提供普通版与带编译器的便携版两个压缩包）。
+- 最新版本：**v0.2.2**（编译后不再等待 Defender 扫描；评测程序可加载编译器自带的运行库 DLL）（Releases 页提供普通版与带编译器的便携版两个压缩包）。
   - v0.1.0 的标签指向的提交与发布文件不完全对应：发布文件后来换成了 MSVC 构建，但标签没有移动。v0.1.1 的标签与发布文件一致。
 - 平台：只支持 Windows 10/11 x64。沙箱接口已为以后的 Linux 后端预留，但尚未实现。
 - 功能已全部实现：
@@ -92,7 +92,7 @@ cargo build --release -p oijudger -p oij --features oijudger/custom-protocol
 |---|---|---|
 | 全部单元 / 集成测试 | `cargo test --release --workspace` | 沙箱测试要用 g++ 编译探针程序：PATH 里要有 g++，或设 `OIJ_GXX` |
 | 演示比赛端到端 | `cargo test --release -p oij --test demo` | 与 `examples/demo-contest/expected.json` 逐项对比 |
-| 沙箱自检（16 项） | `oijudger-cli selftest` | 断网、文件隔离、子进程、剪贴板、TLE/MLE/OLE、深递归、编译期 `#include` |
+| 沙箱自检（17 项） | `oijudger-cli selftest` | 断网、文件隔离、子进程、剪贴板、TLE/MLE/OLE、深递归、编译期 `#include`、动态链接程序能找到运行库 DLL |
 | 性能基准 | `python scripts/make_bench.py <目录> 120 10`，然后 `oijudger-cli judge <目录>` | 每个选手的源码都不同，编译缓存无法复用 |
 
 调试用环境变量：
@@ -161,16 +161,23 @@ cargo build --release -p oijudger -p oij --features oijudger/custom-protocol
 **编译器访问**
 - 编译器目录和 PCH 目录授予 `ALL APPLICATION PACKAGES` 只读。如果编译器装在当前用户无权改 ACL 的目录，会提示改用便携版。
 
+**运行库 DLL**
+- 选手程序、校验器、交互器的 `PATH` 是“编译器的 bin 目录 + System32”（`compile::runtime_path`，`Toolset::runtime_path`）。不带 `-static` 编译的程序、出题人给的预编译校验器需要 `libstdc++-6.dll`、`libgcc_s_seh-1.dll`、`libwinpthread-1.dll` 等（列表见 `compile::RUNTIME_DLLS`），没有它们会以 0xC0000135 退出。
+- 编译器目录本来就对所有 AppContainer 只读开放，所以这不扩大选手程序能读到的范围。
+- 便携版带整个 MinGW；`package.py` 会检查 `RUNTIME_DLLS` 都在 `mingw64/bin` 里（不在就从 `x86_64-w64-mingw32/lib` 补上，仍缺则报错）。
+
 **可信程序**
 - 校验器和交互器是出题人提供的可信程序：不进 AppContainer（`Container::unisolated()`），但仍受 Job 资源限制。
 
 ### 编译与 Windows Defender（性能关键）
 
 - 每个**新写入的 exe** 首次运行前都会被 Defender 扫描（约 0.1～1 秒）。大量编译时扫描会排队，是编译慢的主要原因之一。
-- 现在每个程序只被扫描一次：
-  1. 链接器的输出直接**移动**（不是复制）进比赛目录的 `.oij/build/<哈希>.exe`。
-  2. 评测时**直接从缓存运行**：临时给当前线程的沙箱身份授予这一个文件的读取权限，用完收回；修改 ACL 有全局锁串行化。
-  3. 不再复制到运行目录，也不再事后修改 PE 头。
+- 现在每个程序只被扫描一次，且不占用编译线程和评测线程：
+  1. 链接器输出 `__oij_out.bin`（**不是 `.exe`**），再直接**移动**（不是复制）进比赛目录的 `.oij/build/<哈希>.exe`。输出 `.exe` 时，Defender 在链接器关闭文件时扫描，期间阻塞对文件的一切访问：移动要等平均 0.4 秒、多个编译同时进行时可达数秒，而且首次运行还会再扫一次。`.bin` 不会在关闭时被扫描。
+  2. 入缓存后，后台的预加载线程（`workspace.rs` 的 `Preloader`，4 个线程，独立沙箱身份 `OIJudger.<tag>.P`）用 `Container::preload` 以挂起方式创建进程并立即结束（程序一条指令都不执行）。Defender 在 `CreateProcess` 里完成扫描，之后真正评测时首次运行约 13 ms，而不是 0.3 秒。
+  - 实测（i5-12400，60 人 × 4 题 × 10 点，从零开始）：编译 66–71 秒 → 41 秒，整次评测 66–71 秒 → 56 秒，分数完全一致。
+  3. 评测时**直接从缓存运行**：临时给当前线程的沙箱身份授予这一个文件的读取权限，用完收回；修改 ACL 有全局锁串行化。
+  4. 不再复制到运行目录，也不再事后修改 PE 头。
 - **坑：低完整性标签。** 沙箱里的链接器生成的文件带有 Low 完整性标签。直接移动会保留这个标签，Windows 从带 Low 标签的文件启动程序时会降为 Low 完整性，结果可信的校验器写不出结果。所以入缓存时要用 `sandbox::reset_acl` 重置 ACL 并去掉标签。
 - 预编译 `bits/stdc++.h`：
   - 按“编译器 + 版本 + 参数”在 `%LOCALAPPDATA%\OIJudger\pch\<key>\` 生成一次，通过 `-I` 让 GCC 优先找到 `.gch`。
